@@ -24,7 +24,7 @@ bit32 = {
 }
 """
 
-CHRONARCH = (ROOT / "common" / "chronarch.lua").read_text()
+CHRONARCH = (ROOT / "lib" / "chronarch.lua").read_text()
 
 
 def load_chronarch(lua):

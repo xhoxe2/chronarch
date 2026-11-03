@@ -1,4 +1,2 @@
--- CHRONARCH :: programs-custom.lua
--- Lists the CHRONARCH programs (not the built-in CraftOS ones) and what this
--- machine runs. Install one with: program <name>
-shell.run("update", "--list")
+-- CHRONARCH :: programs-custom.lua  - same as `cx list`: our programs only.
+shell.run("cx", "list")

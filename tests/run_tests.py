@@ -1,4 +1,4 @@
-"""Tests for turtle/mine.lua in a simulated CC:Tweaked world.
+"""Tests for programs/mining/mine.lua in a simulated CC:Tweaked world.
 
 Run from the project root:   python3 tests/run_tests.py
 Needs:                       pip install lupa
@@ -8,7 +8,7 @@ from pathlib import Path
 from lupa import LuaRuntime
 
 HERE = Path(__file__).resolve().parent
-MINE_PATH = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE.parent / "turtle" / "mine.lua"
+MINE_PATH = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE.parent / "programs" / "mining" / "mine.lua"
 MINE = MINE_PATH.read_text()
 MOCK = (HERE / "mock.lua").read_text()
 

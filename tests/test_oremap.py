@@ -1,4 +1,4 @@
-"""Tests for common/oremap.lua: the pixel ore map (rows ready for blit).
+"""Tests for lib/oremap.lua: the pixel ore map (rows ready for blit).
 
 Pure logic. Run from the project root:
     .venv/bin/python tests/test_oremap.py
@@ -8,7 +8,7 @@ from pathlib import Path
 from lupa import LuaRuntime
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = (ROOT / "common" / "oremap.lua").read_text()
+SRC = (ROOT / "lib" / "oremap.lua").read_text()
 
 lua = LuaRuntime(unpack_returned_tuples=True)
 M = lua.eval("function(s) return load(s, 'oremap.lua')() end")(SRC)

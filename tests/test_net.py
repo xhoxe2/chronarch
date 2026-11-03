@@ -17,10 +17,10 @@ from cchelpers import BIT32, ROM, ROOT  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 NET = (HERE / "net.lua").read_text()
-AGENT = (ROOT / "turtle" / "agent.lua").read_text()
-CHRONARCH = (ROOT / "common" / "chronarch.lua").read_text()
-ORESCAN = (ROOT / "common" / "orescan.lua").read_text()
-NAVIGATE = (ROOT / "common" / "navigate.lua").read_text()
+AGENT = (ROOT / "programs" / "mining" / "startup.lua").read_text()
+CHRONARCH = (ROOT / "lib" / "chronarch.lua").read_text()
+ORESCAN = (ROOT / "lib" / "orescan.lua").read_text()
+NAVIGATE = (ROOT / "lib" / "navigate.lua").read_text()
 SECRET = "correct horse battery staple"
 
 BASE_DRIVER = r"""

@@ -29,7 +29,7 @@ local function draw()
   end
   term.setCursorPos(1, h)
   term.setTextColor(colors.gray)
-  term.write("CHRONARCH  Q: quit")
+  term.write("CHRONARCH \183 colony  Q: quit")
 end
 
 local function listen()

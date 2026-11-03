@@ -420,7 +420,7 @@ local function console()
     inputWin.clear()
     inputWin.setCursorPos(1, 1)
     if term.isColor() then term.setTextColor(colors.yellow) end
-    write("> ")
+    write("base> ")
     term.setTextColor(colors.white)
     local line = read(nil, history)
     if line and line:find("%S") then
@@ -493,7 +493,7 @@ local function ticker()
 end
 
 root.clear()
-out("CHRONARCH base #" .. os.getComputerID() .. " online. Type: help", colors.yellow)
+out(("CHRONARCH \183 control \183 %s #%d   (type: help)"):format(os.getComputerLabel() or "base", os.getComputerID()), colors.yellow)
 if monitor then out("Status monitor attached.", colors.lightGray) end
 proto.broadcast(secret, { cmd = "ping" })
 render()

@@ -1,4 +1,4 @@
-"""Tests for common/orescan.lua: the Geo Scanner ore summary.
+"""Tests for lib/orescan.lua: the Geo Scanner ore summary.
 
 Pure logic. Run from the project root:
     .venv/bin/python tests/test_orescan.py
@@ -8,7 +8,7 @@ from pathlib import Path
 from lupa import LuaRuntime
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = (ROOT / "common" / "orescan.lua").read_text()
+SRC = (ROOT / "lib" / "orescan.lua").read_text()
 
 lua = LuaRuntime(unpack_returned_tuples=True)
 M = lua.eval("function(s) return load(s, 'orescan.lua')() end")(SRC)

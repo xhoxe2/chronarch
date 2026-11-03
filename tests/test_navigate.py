@@ -1,4 +1,4 @@
-"""Tests for common/navigate.lua in the simulated world.
+"""Tests for lib/navigate.lua in the simulated world.
 
 Run from the project root:
     .venv/bin/python tests/test_navigate.py
@@ -9,7 +9,7 @@ from lupa import LuaRuntime
 
 HERE = Path(__file__).resolve().parent
 MOCK = (HERE / "mock.lua").read_text()
-NAV = (HERE.parent / "common" / "navigate.lua").read_text()
+NAV = (HERE.parent / "lib" / "navigate.lua").read_text()
 
 
 def make():

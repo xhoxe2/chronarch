@@ -583,7 +583,7 @@ local function worker()
   end
 end
 
-print(("CHRONARCH agent '%s' (#%d) online"):format(name, os.getComputerID()))
+print(("CHRONARCH \183 mining \183 %s (#%d)"):format(name, os.getComputerID()))
 wearAnchor()
 do -- where are we? (the map shows world coordinates from the start, like `gps locate`)
   local here = gpsHere()

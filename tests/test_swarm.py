@@ -1,4 +1,4 @@
-"""Tests for common/swarm.lua: splitting an area between turtles.
+"""Tests for lib/swarm.lua: splitting an area between turtles.
 
 Run from the project root:
     .venv/bin/python tests/test_swarm.py
@@ -9,7 +9,7 @@ from lupa import LuaRuntime
 
 ROOT = Path(__file__).resolve().parent.parent
 lua = LuaRuntime(unpack_returned_tuples=True)
-M = lua.eval("function(s) return load(s, 'swarm.lua')() end")((ROOT / "common" / "swarm.lua").read_text())
+M = lua.eval("function(s) return load(s, 'swarm.lua')() end")((ROOT / "lib" / "swarm.lua").read_text())
 mk = lua.eval("function(src) return load('return ' .. src)() end")
 
 results = []

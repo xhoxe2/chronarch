@@ -1,4 +1,4 @@
-"""Tests for common/statusview.lua: the base status-monitor table.
+"""Tests for lib/statusview.lua: the base status-monitor table.
 
 Pure logic. Run from the project root:
     .venv/bin/python tests/test_status.py
@@ -8,7 +8,7 @@ from pathlib import Path
 from lupa import LuaRuntime
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = (ROOT / "common" / "statusview.lua").read_text()
+SRC = (ROOT / "lib" / "statusview.lua").read_text()
 
 lua = LuaRuntime(unpack_returned_tuples=True)
 view = lua.eval("function(s) return load(s, 'statusview.lua')() end")(SRC)

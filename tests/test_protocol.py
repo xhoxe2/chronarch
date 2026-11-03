@@ -1,4 +1,4 @@
-"""Tests for common/chronarch.lua: SHA-256, HMAC and message signing.
+"""Tests for lib/chronarch.lua: SHA-256, HMAC and message signing.
 
 Pure logic, no network. Run from the project root:
     .venv/bin/python tests/test_protocol.py
