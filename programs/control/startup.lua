@@ -70,7 +70,8 @@ end
 
 -- Ore worth set by the player or the AI (`value <ore> <n>`), sent with every
 -- harvest so the turtle mines the most valuable ore first. Kept in a file.
-local VALUES_FILE = "/values"
+local VALUES_FILE = "/.values" -- hidden: not listed by `programs`
+if not fs.exists(VALUES_FILE) and fs.exists("/values") then fs.move("/values", VALUES_FILE) end
 local values = {}
 if fs.exists(VALUES_FILE) then
   local f = fs.open(VALUES_FILE, "r")

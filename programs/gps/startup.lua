@@ -1,8 +1,8 @@
 -- CHRONARCH :: gps (startup.lua on a GPS host computer)
 -- Answers `gps locate` for every turtle and pocket computer: one of the four
--- computers of the GPS tower. Its own position is in /gps.pos ("x y z"),
+-- computers of the GPS tower. Its own position is in /.gps.pos ("x y z"),
 -- written by `cx install gps <x> <y> <z>`.
-local f = fs.exists("/gps.pos") and fs.open("/gps.pos", "r")
+local f = fs.exists("/.gps.pos") and fs.open("/.gps.pos", "r")
 local pos = f and f.readAll() or ""
 if f then f.close() end
 local x, y, z = pos:match("(%-?%d+)%s+(%-?%d+)%s+(%-?%d+)")

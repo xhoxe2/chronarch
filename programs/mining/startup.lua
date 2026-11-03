@@ -47,7 +47,8 @@ local sos -- why the turtle needs help ("low fuel", "stuck away from home"...), 
 -- Where home is in the world (the spot by the chest). With GPS the turtle
 -- finds it by itself; without, the player tells it the height once with
 -- `sety <name> <y>`. Kept in a file as "x y z" (or just "y").
-local HOME_Y_FILE = "/home_y"
+local HOME_Y_FILE = "/.home" -- hidden data files: not listed by `programs`
+if not fs.exists(HOME_Y_FILE) and fs.exists("/home_y") then fs.move("/home_y", HOME_Y_FILE) end
 local homeX, homeY, homeZ
 local function loadHome()
   if not fs.exists(HOME_Y_FILE) then return end
@@ -65,7 +66,8 @@ end
 loadHome()
 
 -- What the turtle learned on earlier jobs (ore seen, tunnels, scanned spots).
-local MEMORY_FILE = "/memory.txt"
+local MEMORY_FILE = "/.memory"
+if not fs.exists(MEMORY_FILE) and fs.exists("/memory.txt") then fs.move("/memory.txt", MEMORY_FILE) end
 local function readFile(path)
   if not fs.exists(path) then return nil end
   local f = fs.open(path, "r")

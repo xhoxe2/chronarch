@@ -42,7 +42,7 @@ class Run:
           end }
           fs = {
             exists = function(p)
-              if p == "/program" then return SAVED ~= nil end
+              if p == "/.program" then return SAVED ~= nil end
               for _, f in ipairs(ROOTFILES) do if f == p then return true end end
               return false
             end,
@@ -64,7 +64,7 @@ class Run:
 
 # --- cx update, by machine ----------------------------------------------------
 r = Run("turtle", ("update",))
-code = set(r.writes) - {"/program"}
+code = set(r.writes) - {"/.program"}
 check("turtle -> mining files", code == COMMON | {"startup.lua", "mine.lua", "lib/navigate.lua", "lib/orescan.lua"}, code)
 check("mining startup from programs/mining/", r.writes.get("startup.lua") == "-- body " + RAW + "programs/mining/startup.lua")
 check("libraries from lib/", r.writes.get("lib/navigate.lua") == "-- body " + RAW + "lib/navigate.lua")
@@ -80,17 +80,17 @@ check("every URL is our public repo, never the key",
 
 # --- cx install ---------------------------------------------------------------
 r = Run("turtle", ("install", "mining"))
-check("install saves the choice", r.writes.get("/program") == "mining", r.writes.get("/program"))
+check("install saves the choice", r.writes.get("/.program") == "mining", r.writes.get("/.program"))
 r = Run("computer", ("install", "mining"))
 check("mining refused on a computer", not r.writes and "turtle" in r.out, r.out)
 r = Run("turtle", ("install", "dancing"))
 check("unknown program: nothing written, list shown", not r.writes and "mining" in r.out)
 r = Run("computer", ("install", "base"))
-check("old name base installs control", r.writes.get("/program") == "control")
+check("old name base installs control", r.writes.get("/.program") == "control")
 r = Run("pocket", ("update",), saved="colony")
 check("saved old name colony means buddy", "buddy.lua" in r.writes, set(r.writes))
 r = Run("computer", ("install", "gps", "645", "67", "-107"))
-check("gps install stores the position", r.writes.get("/gps.pos") == "645 67 -107"
+check("gps install stores the position", r.writes.get("/.gps.pos") == "645 67 -107"
       and r.writes.get("startup.lua") == "-- body " + RAW + "programs/gps/startup.lua", r.writes)
 r = Run("computer", ("install", "gps"))
 check("gps without coordinates: explains, writes nothing", not r.writes and "x" in r.out, r.out)

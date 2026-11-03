@@ -7,7 +7,7 @@
 --   cx install <p>    put another program on this machine (gps: cx install gps x y z)
 --   cx <command>      run one of this program's commands, e.g. cx buddy
 --
--- Every machine runs ONE program (kept in /program). Its files come from the
+-- Every machine runs ONE program (kept in /.program). Its files come from the
 -- public GitHub repo: programs/<program>/<file> and lib/<library>.lua, the
 -- same layout as on the machine. The secret /chronarch.key is never fetched
 -- or touched. First time on a fresh machine: copy cx.lua in (single-player
@@ -15,7 +15,12 @@
 
 local USER, REPO, BRANCH = "xhoxe2", "chronarch", "main"
 local API = ("https://api.github.com/repos/%s/%s/commits/%s"):format(USER, REPO, BRANCH)
-local PROGRAM_FILE = "/program"
+-- Data files start with a dot: hidden from `ls`/`programs`, never mistaken
+-- for a command. Older versions used names without the dot.
+local PROGRAM_FILE = "/.program"
+local function migrate(old, new)
+  if fs.exists and fs.move and not fs.exists(new) and fs.exists(old) then fs.move(old, new) end
+end
 
 -- The CHRONARCH programs. files: programs/<name>/<file> -> /<file>.
 -- libs: lib/<lib>.lua -> /lib/<lib>.lua. help: what to type, for `cx help`.
@@ -65,7 +70,7 @@ local PROGRAMS = {
     run = "starts by itself",
     help = {
       "Runs by itself: answers gps locate.",
-      "Its position is in /gps.pos;",
+      "Its position is in /.gps.pos;",
       "set it: cx install gps <x> <y> <z>",
     },
   },
@@ -82,6 +87,7 @@ local function kindHere() return turtle and "turtle" or pocket and "pocket" or "
 local function guess() return turtle and "mining" or pocket and "buddy" or "control" end
 
 local function savedProgram()
+  migrate("/program", PROGRAM_FILE)
   if not fs.exists(PROGRAM_FILE) then return nil end
   local f = fs.open(PROGRAM_FILE, "r")
   local p = (f.readAll() or ""):gsub("%s+", "")
@@ -206,7 +212,7 @@ local function install(name, ...)
       print("cx install gps <x> <y> <z>   (F3, Targeted Block, looking at this computer)")
       return
     end
-    local f = fs.open("/gps.pos", "w")
+    local f = fs.open("/.gps.pos", "w")
     f.write(("%d %d %d"):format(x, y, z))
     f.close()
   end
