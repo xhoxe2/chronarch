@@ -142,9 +142,9 @@ for c in area_ores:
     W.set(*c, "minecraft:iron_ore")
 nav.reset()
 nav.calibrate(scan)
-mined, reason = nav.mineArea(scan, 12)
+mined, reason = nav.mineArea(scan, 12, lua.table_from({"explore": True}))
 left = [c for c in area_ores if W.get(*c) == "minecraft:iron_ore"]
-check("mineArea grid clears every ore, isolated clumps too", not left, (mined, reason, left))
+check("explore clears every ore in the area, isolated clumps too", not left, (mined, reason, left))
 check("mineArea ends back home", (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0),
       (W.pos.x, W.pos.y, W.pos.z))
 
@@ -303,7 +303,7 @@ lua.execute("QUICK = 0")
 qscan = lua.eval("function(W) return function(r, quick) if quick then QUICK = QUICK + 1 end return W.scanBlocks(r) end end")(W)
 nav.reset()
 nav.calibrate(scan)
-nav.mineArea(qscan, 12)
+nav.mineArea(qscan, 12, lua.table_from({"explore": True}))
 check("scans on the go while walking", lua.eval("QUICK") > 0, lua.eval("QUICK"))
 
 # 17. dropJunk throws stone away and keeps loot.
@@ -368,6 +368,24 @@ nav.reset(0, 0, 0, 0)
 lua.execute("FIXES = 0")
 nav.mineArea(scan, 8, lua.table_from({"onFix": lua.eval("function() FIXES = FIXES + 1 end")}))
 check("no correction when nothing is wrong", lua.eval("FIXES") == 0 and (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0))
+
+# 22. Plain harvest (no explore): mines what it can see, then goes home; it
+#     does not wander off to search the rest of the area.
+lua, W, nav, scan = make()
+W.h = 0
+W.fuel = 20000
+W.set(3, 0, 2, "minecraft:diamond_ore")
+W.set(-4, -1, -3, "minecraft:diamond_ore")
+W.set(0, -11, 11, "minecraft:diamond_ore")  # far and deep: out of sight from home
+nav.reset(0, 0, 0, 0)
+lua.execute("DEEPEST = 0")
+onmove = lua.eval("function(p) if p.y < DEEPEST then DEEPEST = p.y end end")
+W.default = lua.eval("function(x, y, z) if y <= -20 then return 'minecraft:bedrock' end return 'minecraft:stone' end")
+nav.mineArea(scan, 12, lua.table_from({"only": "diamond", "onMove": onmove}))
+check("harvest takes the diamonds it sees", W.get(3, 0, 2) is None and W.get(-4, -1, -3) is None)
+check("harvest does not go searching deep", lua.eval("DEEPEST") >= -2 and W.get(0, -11, 11) == "minecraft:diamond_ore",
+      lua.eval("DEEPEST"))
+check("harvest ends home", (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0))
 
 # 10. ensureFuel burns coal from the inventory when fuel runs low.
 lua, W, nav, scan = make()

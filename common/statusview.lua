@@ -93,7 +93,8 @@ end
 -- bridge/worker.js), a plan run in order. Returns the answer without those
 -- lines, plus the actions we allow: for a turtle we know, with numbers clamped
 -- to safe limits. The base still asks the player to confirm with `yes`.
-local ALLOWED = { scan = { 1, 16, 8 }, harvest = { 1, 24, 12 }, mine = { 1, 64, 16 }, stop = false }
+local ALLOWED = { scan = { 1, 16, 8 }, harvest = { 1, 24, 12 }, explore = { 1, 24, 12 },
+  mine = { 1, 64, 16 }, stop = false }
 
 local function parseOne(line, turtles)
   local cmd, name, n, ore = line:match("DO:%s*(%a+)%s+([%w_%-]+)%s*(%d*)%s*([%w_]*)")
@@ -104,7 +105,7 @@ local function parseOne(line, turtles)
   else
     n = nil
   end
-  if cmd ~= "harvest" or ore == "" then ore = nil end
+  if (cmd ~= "harvest" and cmd ~= "explore") or ore == "" then ore = nil end
   return { cmd = cmd, name = name, n = n, ore = ore,
     line = cmd .. " " .. name .. (n and (" " .. n) or "") .. (ore and (" " .. ore) or "") }
 end

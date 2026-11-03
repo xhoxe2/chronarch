@@ -86,6 +86,7 @@ check("plan: actions in order, unknown dropped, at most 3",
       [plan[i].line for i in range(1, len(plan) + 1)] == ["scan xhoxi 8", "harvest xhoxi 12 diamond", "stop xhoxi"],
       [plan[i].line for i in range(1, len(plan) + 1)])
 check("action: harvest with an ore filter", act("Go.\nDO: harvest xhoxi 12 diamond")[1] == "harvest xhoxi 12 diamond")
+check("action: explore with an ore filter", act("Go.\nDO: explore xhoxi 20 diamond")[1] == "explore xhoxi 20 diamond")
 check("action: ore word only for harvest", act("Go.\nDO: scan xhoxi 8 diamond")[1] == "scan xhoxi 8")
 
 width = max(len(n) for n, _, _ in results)

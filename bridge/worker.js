@@ -25,7 +25,10 @@ const SYSTEM =
   "If the player asks you to act, or an action clearly helps, end with up to 3 extra " +
   "lines 'DO: <command>', run in order, each after the previous one finishes, using " +
   "only: scan <turtle> <radius 1-16> | " +
-  "harvest <turtle> <radius 1-24> [ore word, e.g. diamond, to mine only that] | " +
+  "harvest <turtle> <radius 1-24> [ore word, e.g. diamond, to mine only that] " +
+  "(mines the ore it can see, then comes home) | explore <turtle> <radius 1-24> " +
+  "[ore word] (also searches the whole area, deep and far; only if the player " +
+  "asks to search or explore) | " +
   "mine <turtle> <length 1-64> | stop <turtle>. " +
   "harvest scans by itself while it works, so add a separate scan only if the " +
   "player asks for one. The player confirms the plan before it runs. Otherwise " +

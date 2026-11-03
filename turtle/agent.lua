@@ -185,6 +185,7 @@ local function doMineArea(j)
   }
   if j.cx then opts.center = { x = j.cx, y = j.cy or 0, z = j.cz or 0 } end
   opts.only = j.ore
+  opts.explore = j.explore
   opts.onFix = function(dx, dy, dz) -- the scan showed we were off; tell the base
     proto.send(secret, j.from, { type = "log", name = name,
       text = ("position corrected by scan: %d,%d,%d"):format(dx, dy, dz) })
@@ -193,7 +194,7 @@ local function doMineArea(j)
   local dropped = nav.deposit()
   proto.send(secret, j.from, { type = "harvest", name = name, pos = { x = 0, y = 0, z = 0 }, ores = {}, done = true })
   proto.send(secret, j.from, { type = "dig", name = name, ok = reason == "area clear" or reason == "stopped",
-    text = ("harvest r%d%s: %d ores (%s), %s"):format(radius, j.ore and (" " .. j.ore) or "", mined,
+    text = ("%s r%d%s: %d ores (%s), %s"):format(j.explore and "explore" or "harvest", radius, j.ore and (" " .. j.ore) or "", mined,
       tostring(reason), dropped and "unloaded" or "no chest"),
     fuel = turtle.getFuelLevel() })
 end
@@ -254,6 +255,7 @@ local function listener()
         state = "digging"
         job = { from = from, area = true, radius = tonumber(msg.radius) or 12,
           ore = type(msg.ore) == "string" and msg.ore:match("^[%w_]+$") or nil,
+          explore = msg.explore == true,
           cx = msg.cx and tonumber(msg.cx), cy = msg.cy and tonumber(msg.cy), cz = msg.cz and tonumber(msg.cz) }
         os.queueEvent("chronarch_job")
       end

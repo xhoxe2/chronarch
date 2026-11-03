@@ -233,8 +233,9 @@ end
 --     eaten cell by cell with no spinning to look around;
 --   * scan on the go every few steps (no waiting on the scanner's cooldown), so
 --     new ore shows up while it walks;
---   * only when no known ore is left, walk to the nearest part of the area no
---     scan has covered yet and scan there;
+--   * when no known ore is left: stop and go home, unless opts.explore is set;
+--     then walk to the nearest part of the area no scan has covered yet and
+--     scan there (that walk can go deep and far, so only on request);
 --   * throw junk away on the go, drive home only to unload real loot.
 -- Needs the heading already calibrated. scanFn(r, quick) returns the raw scan
 -- (quick = one try, no cooldown wait). Ends back at the start.
@@ -384,6 +385,10 @@ function M.mineArea(scanFn, areaRadius, opts)
   end
 
   scanHere(false)
+  if opts.center then -- a tapped cluster may be out of sight from home: go and look
+    M.travel(cx0, cy0, cz0)
+    scanHere(false)
+  end
   while true do
     if opts.shouldStop and opts.shouldStop() then reason = "stopped"; break end
 
@@ -425,7 +430,7 @@ function M.mineArea(scanFn, areaRadius, opts)
           if not nd or d < nd then next, nd = p, d end
         end
       end
-      if not next then break end -- every ore found is mined, every corner scanned
+      if not next or not opts.explore then break end -- done: all known ore mined
       if not afford(nd + homeDist(next) + fuelBuffer) then reason = "low fuel"; break end
       next.done = true -- even if the way is blocked, don't try forever
       M.travel(next.x, next.y, next.z)

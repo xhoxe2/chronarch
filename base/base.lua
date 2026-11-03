@@ -153,7 +153,8 @@ function commands.help()
   out("list                       who is online", colors.yellow)
   out("mine <name> <len> [depth]  send a turtle mining", colors.yellow)
   out("scan <name> [radius]       find ores around a turtle", colors.yellow)
-  out("harvest <name> [r] [ore]   mine ore in an area (ore: e.g. diamond)", colors.yellow)
+  out("harvest <name> [r] [ore]   mine the ore it sees (ore: e.g. diamond)", colors.yellow)
+  out("explore <name> [r] [ore]   search the whole area too (deep, far)", colors.yellow)
   out("stop <name>                recall a turtle (stop, come home)", colors.yellow)
   out("map <name> | status        show a turtle's ore map / the list", colors.yellow)
   out("(tap an ore on the map -> harvest that cluster)", colors.lightGray)
@@ -211,9 +212,9 @@ function commands.scan(name, radius)
   render()
 end
 
-function commands.harvest(name, radius, ore)
+local function areaJob(cmd, name, radius, ore)
   if not name then
-    out("Usage: harvest <name> [radius] [ore]", colors.orange)
+    out(("Usage: %s <name> [radius] [ore]"):format(cmd), colors.orange)
     return
   end
   local id = turtles[name] and turtles[name].id or rednet.lookup(PROTOCOL, name)
@@ -222,11 +223,16 @@ function commands.harvest(name, radius, ore)
     return
   end
   radius = tonumber(radius) or 12
-  proto.send(secret, id, { cmd = "mineArea", radius = radius, ore = ore })
+  proto.send(secret, id, { cmd = "mineArea", radius = radius, ore = ore, explore = cmd == "explore" })
   if turtles[name] then turtles[name].state = "digging" end
-  out(("-> %s: harvest area r%d%s   (watch live: map %s)"):format(name, radius,
+  out(("-> %s: %s r%d%s   (watch live: map %s)"):format(name, cmd, radius,
     ore and (" only " .. ore) or "", name), colors.cyan)
 end
+
+-- harvest: ore it can see from home (and spots on the way), then home.
+-- explore: also walks the whole area, deep and far, to find more.
+function commands.harvest(...) areaJob("harvest", ...) end
+function commands.explore(...) areaJob("explore", ...) end
 
 function commands.stop(name)
   if not name then
