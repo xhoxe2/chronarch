@@ -20,7 +20,7 @@ def check(name, cond, detail=""):
     results.append((name, bool(cond), detail))
 
 
-def run(is_turtle):
+def run(is_turtle, sha=None):
     """Run update.lua as a turtle or a base; return (written {path: url}, all urls)."""
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute("WRITES = {}; URLS = {}")
@@ -31,9 +31,14 @@ def run(is_turtle):
     lua.execute("""
       http = { get = function(url)
         URLS[#URLS + 1] = url
+        if url:find("api.github.com", 1, true) then
+          if not SHA then return nil end
+          return { readAll = function() return SHA end, close = function() end }
+        end
         return { readAll = function() return "-- body " .. url end, close = function() end }
       end }
     """)
+    lua.globals().SHA = sha
     # fs.open records what path got written and with which URL's body
     lua.execute("""
       fs = { open = function(path, mode)
@@ -45,7 +50,7 @@ def run(is_turtle):
     """)
     lua.execute(SRC)
     writes = dict(lua.eval("WRITES"))
-    urls = [lua.eval("URLS")[i] for i in range(1, lua.eval("#URLS") + 1)]
+    urls = [u for u in (lua.eval("URLS")[i] for i in range(1, lua.eval("#URLS") + 1)) if "api.github.com" not in u]
     return writes, urls
 
 
@@ -81,6 +86,14 @@ check("turtle never fetches the base-only files",
 check("every URL points at the right public repo", all(u.startswith(RAW) for u in urls), urls)
 check("update.lua refreshes itself",
       writes.get("update.lua") == "-- body " + RAW + "update.lua", writes.get("update.lua"))
+
+# --- pinned to the latest commit (dodges the raw CDN cache) ---
+SHA = "04809c82e023cd07b41385c09432b85df70f7aa8"
+writes, urls = run(is_turtle=True, sha=SHA)
+PINNED = "https://raw.githubusercontent.com/xhoxe2/chronarch/" + SHA + "/"
+check("with the API: every file comes from the latest commit", urls and all(u.startswith(PINNED) for u in urls), urls[:2])
+writes, urls = run(is_turtle=True, sha="not a sha")
+check("garbage from the API: falls back to the branch", all(u.startswith(RAW) for u in urls), urls[:2])
 
 width = max(len(n) for n, _, _ in results)
 for n, good, d in results:

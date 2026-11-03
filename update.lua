@@ -14,7 +14,23 @@
 local USER   = "xhoxe2"
 local REPO   = "chronarch"
 local BRANCH = "main"
-local RAW = ("https://raw.githubusercontent.com/%s/%s/%s/"):format(USER, REPO, BRANCH)
+local API = ("https://api.github.com/repos/%s/%s/commits/%s"):format(USER, REPO, BRANCH)
+local RAW -- set in run(): pinned to the latest commit, see latestRaw()
+
+-- raw.githubusercontent.com caches a branch for ~5 minutes, so an update right
+-- after a push could pull the old code. A commit's files never change, so ask
+-- GitHub for the latest commit id and download from that exact commit. If the
+-- API is unreachable (60 calls/hour without a token), fall back to the branch.
+local function latestRaw()
+  local base = "https://raw.githubusercontent.com/%s/%s/%s/"
+  local res = http.get(API, { Accept = "application/vnd.github.sha" })
+  if res then
+    local sha = res.readAll()
+    res.close()
+    if sha and sha:match("^%x+$") and #sha == 40 then return base:format(USER, REPO, sha), sha end
+  end
+  return base:format(USER, REPO, BRANCH), BRANCH
+end
 
 -- local filename on this computer  ->  path inside the repo
 local COMMON = {
@@ -63,7 +79,9 @@ local function run()
     return
   end
   local isTurtle = turtle ~= nil
-  print(("CHRONARCH update (%s) <- %s/%s"):format(isTurtle and "turtle" or "base", USER, REPO))
+  local ref
+  RAW, ref = latestRaw()
+  print(("CHRONARCH update (%s) <- %s/%s @ %s"):format(isTurtle and "turtle" or "base", USER, REPO, ref:sub(1, 7)))
 
   local files = plan(isTurtle)
   local names = {}
@@ -86,7 +104,7 @@ local function run()
   if fail == 0 then
     print("Reboot to run the new code: hold Ctrl+R.")
   else
-    print("GitHub caches raw files ~1 min. Just pushed? Wait and run update again.")
+    print("Some files failed. Check HTTP, then run update again.")
   end
 end
 
