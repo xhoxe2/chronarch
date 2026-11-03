@@ -88,6 +88,12 @@ check("unknown program: short answer, nothing written", not r.writes and "No pro
       and len(r.out.strip().split("\n")) <= 3, r.out)
 r = Run("turtle", ("install", "miner"))
 check("'miner' means mining", r.writes.get("/.program") == "mining", r.writes.get("/.program"))
+r = Run("pocket", ("install", "control"))
+check("control can go on a pocket too (a base in your hand)", r.writes.get("/.program") == "control"
+      and r.writes.get("startup.lua") == "-- body " + RAW + "programs/control/startup.lua", r.writes)
+r = Run("pocket", ("install", "buddy"), saved="control", root_files=("startup.lua", "lib/swarm.lua"))
+check("switching back to buddy removes control's startup", "startup.lua" in r.deleted and "lib/swarm.lua" in r.deleted,
+      r.deleted)
 r = Run("pocket", ("install", "miner"))
 check("mining on a pocket: says what this machine runs", not r.writes and "pocket" in r.out and "buddy" in r.out, r.out)
 r = Run("computer", ("install", "base"))

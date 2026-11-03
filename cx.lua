@@ -38,7 +38,7 @@ local PROGRAMS = {
     },
   },
   control = {
-    needs = "computer", files = { "startup.lua" }, libs = { "statusview", "oremap", "swarm" },
+    needs = "computer/pocket", files = { "startup.lua" }, libs = { "statusview", "oremap", "swarm" },
     about = "base + monitor: commands, map, AI, swarm",
     run = "starts by itself, type at base>",
     help = {
@@ -183,9 +183,9 @@ local function list()
   print("CHRONARCH programs:")
   for _, name in ipairs(ORDER) do
     local p = PROGRAMS[name]
-    print((" %-8s %-8s %s"):format(name, p.needs, wide and p.about or ""))
+    print((" %-8s %-15s %s"):format(name, p.needs, wide and p.about or ""))
   end
-  for _, s in ipairs(SOON) do print((" %-8s soon     %s"):format(s[1], wide and s[2] or "")) end
+  for _, s in ipairs(SOON) do print((" %-8s %-15s %s"):format(s[1], "soon", wide and s[2] or "")) end
   print(("This %s runs: %s"):format(kindHere(), current()))
   print("Change: cx install <name>")
 end
@@ -207,7 +207,7 @@ local function install(name, ...)
     print("This " .. kindHere() .. " can run: " .. (turtle and "mining" or pocket and "buddy" or "control, gps"))
     return
   end
-  if p.needs ~= kindHere() then
+  if not p.needs:find(kindHere(), 1, true) then
     print(("'%s' is for a %s,"):format(name, p.needs))
     print(("this is a %s: it runs %s."):format(kindHere(), current()))
     return
@@ -223,10 +223,17 @@ local function install(name, ...)
     f.write(("%d %d %d"):format(x, y, z))
     f.close()
   end
+  local prev = current()
   local f = fs.open(PROGRAM_FILE, "w")
   f.write(name)
   f.close()
-  download(name)
+  if download(name) and prev ~= name then
+    -- the old program's own files (e.g. its startup.lua) must not linger
+    local keep = plan(name)
+    for path in pairs(plan(prev)) do
+      if not keep[path] and fs.exists(path) then fs.delete(path) end
+    end
+  end
 end
 
 local args = { ... }
