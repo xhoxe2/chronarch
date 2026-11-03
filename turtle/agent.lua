@@ -121,6 +121,57 @@ local function unequipScanner()
   equipTool()
 end
 
+-- Chunk loading without giving up the radio. Advanced Peripherals' Chunk
+-- Controller force-loads the turtle's chunk the moment it is equipped and
+-- keeps it loaded ~10 minutes after it is taken off (chunkLoadValidTime);
+-- the 8 chunks around a forced one keep ticking too. So the turtle carries
+-- the controller in its inventory and:
+--   * at home while idle wears it (the base and the GPS tower nearby stay
+--     loaded when the player is far away),
+--   * on the move swaps it on for a blink every 8 blocks / 4 minutes, so the
+--     chunk it is in (or next to) is always loaded.
+-- No controller in the inventory: all of this quietly does nothing.
+local CONTROLLER_ITEM = "advancedperipherals:chunk_controller"
+
+local function toolIs(ptype) return peripheral.getType(toolSide) == ptype end
+
+local function findPickaxe()
+  for s = 1, 16 do
+    local d = turtle.getItemDetail(s)
+    if d and d.name:find("pickaxe") then return s end
+  end
+end
+
+-- Blink the controller on and back off (same slot, like the scanner swap).
+local function anchorHere()
+  local slot = findItem(CONTROLLER_ITEM)
+  if not slot then return end
+  turtle.select(slot)
+  equipTool()
+  for _ = 1, 5 do if toolIs("chunky") then break end; sleep(0.05) end
+  equipTool()
+  turtle.select(1)
+end
+
+local anchorX, anchorZ, anchorAt = 0, 0, -math.huge
+local function anchorTick(pos)
+  if math.abs(pos.x - anchorX) >= 8 or math.abs(pos.z - anchorZ) >= 8 or os.clock() - anchorAt > 240 then
+    anchorHere()
+    anchorX, anchorZ, anchorAt = pos.x, pos.z, os.clock()
+  end
+end
+
+-- Idle at home: wear the controller. Working: wear the pickaxe.
+local function wearAnchor()
+  local slot = findItem(CONTROLLER_ITEM)
+  if slot and not toolIs("chunky") then turtle.select(slot); equipTool(); turtle.select(1) end
+end
+local function wearPickaxe()
+  if not toolIs("chunky") then return end
+  local slot = findPickaxe()
+  if slot then turtle.select(slot); equipTool(); turtle.select(1) end
+end
+
 local CAL_RADIUS = 8
 
 -- Equip the scanner, scan (retrying through its cooldown), put the pickaxe back.
@@ -230,6 +281,7 @@ local function doMineArea(j)
       proto.send(secret, j.from, { type = "harvest", name = name, pos = pos, ores = list })
     end,
     onMove = function(pos) -- just the '@' marker, every half-second, so the map keeps up
+      anchorTick(pos)
       local now = os.clock()
       if now - lastMove < 0.5 then return end
       lastMove = now
@@ -364,12 +416,16 @@ local function worker()
     os.pullEvent("chronarch_job")
     local j = job
     sos = nil -- a new order: start clean
+    wearPickaxe()
+    anchorX, anchorZ, anchorAt = 0, 0, -math.huge
     if j.scan then doScan(j) elseif j.dig then doDig(j) elseif j.area then doMineArea(j) else doMine(j) end
     state, job = "idle", nil
+    wearAnchor()
   end
 end
 
 print(("CHRONARCH agent '%s' (#%d) online"):format(name, os.getComputerID()))
+wearAnchor()
 gpsHomeY() -- the map then shows world coordinates from the start, like `gps locate`
 proto.broadcast(secret, statusBody())
 parallel.waitForAny(listener, worker)

@@ -133,7 +133,14 @@ return function()
     local p = {
       getNames = function() return { "right" } end,
       isPresent = function(s) return s == "right" end,
-      getType = function(s) return s == "right" and "modem" or nil end,
+      getType = function(s)
+        if s == "right" then return "modem" end
+        if s == "left" and C.equip and C.equip.left and C.equip.left.name == "advancedperipherals:chunk_controller" then
+          C.anchored = (C.anchored or 0) + 1 -- the controller got worn at least for a moment
+          return "chunky"
+        end
+        return nil
+      end,
       hasType = function(s, t) return s == "right" and t == "modem" end,
       getMethods = function(s) return s == "right" and methods or nil end,
       call = function(s, m, ...)
@@ -193,6 +200,7 @@ return function()
       C.inv = {}
       C.equip = { left = opts.toolItem or false, right = false }
       if opts.scanner then C.inv[3] = { name = "advancedperipherals:geo_scanner", count = 1 } end
+      if opts.controller then C.inv[4] = { name = "advancedperipherals:chunk_controller", count = 1 } end
       local function equipSide(side)
         local tmp = C.equip[side]
         C.equip[side] = C.inv[C.sel] or false

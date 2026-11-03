@@ -401,7 +401,7 @@ local function keepItem(name)
   if FUEL_ITEMS[name] then return true end
   if name == "advancedperipherals:geo_scanner" then return true end
   if name:find("pickaxe") then return true end
-  if name == BUCKET or name == ENDER_CHEST then return true end
+  if name == BUCKET or name == ENDER_CHEST or name == "advancedperipherals:chunk_controller" then return true end
   return false
 end
 

@@ -81,8 +81,10 @@ sim.setSources(lua.table_from({
     "navigate": NAVIGATE,
 }))
 sim.addComputer(lua.table_from({"id": 0, "label": "base", "secret": SECRET, "src": BASE_DRIVER}))
+pickaxe = lua.table_from({"name": "minecraft:diamond_pickaxe", "count": 1})
 sim.addComputer(lua.table_from({"id": 5, "label": "xhoxi", "secret": SECRET, "src": AGENT,
-                                "withTurtle": True, "withShell": True, "scanner": True}))
+                                "withTurtle": True, "withShell": True, "scanner": True,
+                                "controller": True, "toolItem": pickaxe}))
 sim.addComputer(lua.table_from({"id": 9, "label": "evil", "src": ATTACKER_DRIVER}))
 sim.run(100000)
 
@@ -110,6 +112,14 @@ check("fake turtle 'ghost' never trusted", not any("ghost" in r for r in rows), 
 check("forged order ignored by the turtle", not any(r.startswith("attacker_got") for r in rows), rows)
 check("turtle scanned ores and reported", any(
     r == "scan::ok=true/total=3/nearest=minecraft:iron_ore" for r in rows), rows)
+
+turtle_c = [c for c in sim.computers.values() if c.label == "xhoxi"][0]
+inv_names = [turtle_c.inv[i].name for i in range(1, 17) if turtle_c.inv[i]]
+check("idle at home: wears the chunk controller",
+      turtle_c.equip.left and turtle_c.equip.left.name == "advancedperipherals:chunk_controller", turtle_c.equip.left)
+check("pickaxe and scanner kept in the inventory meanwhile",
+      "minecraft:diamond_pickaxe" in inv_names and "advancedperipherals:geo_scanner" in inv_names, inv_names)
+check("controller worn more than once (startup + after each job)", (turtle_c.anchored or 0) >= 2, turtle_c.anchored)
 
 width = max(len(n) for n, _, _ in results)
 for n, good, d in results:

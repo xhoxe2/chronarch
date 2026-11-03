@@ -221,6 +221,7 @@ end
 local function isKit(name)
   return name == "advancedperipherals:geo_scanner" or name:find("pickaxe") ~= nil
       or name == "minecraft:bucket" or name == "enderstorage:ender_chest"
+      or name == "advancedperipherals:chunk_controller"
 end
 
 -- Empties everything into the chest except one stack of fuel and the kit.
