@@ -37,37 +37,49 @@ local function latestRaw()
   return base:format(USER, REPO, BRANCH), BRANCH
 end
 
--- local filename on this computer  ->  path inside the repo
+-- local filename on this computer  ->  path inside the repo. Libraries go to
+-- /lib so the root (what `programs` lists) holds only commands.
 local COMMON = {
-  ["chronarch.lua"] = "common/chronarch.lua",
-  ["update.lua"]    = "update.lua",
-  ["program.lua"]   = "program.lua",
+  ["lib/chronarch.lua"]   = "common/chronarch.lua",
+  ["update.lua"]          = "update.lua",
+  ["program.lua"]         = "program.lua",
+  ["programs-custom.lua"] = "programs-custom.lua",
 }
 local TURTLE = {
-  ["startup.lua"]  = "turtle/agent.lua",
-  ["mine.lua"]     = "turtle/mine.lua",
-  ["orescan.lua"]  = "common/orescan.lua",
-  ["navigate.lua"] = "common/navigate.lua",
+  ["startup.lua"]      = "turtle/agent.lua",
+  ["mine.lua"]         = "turtle/mine.lua",
+  ["lib/orescan.lua"]  = "common/orescan.lua",
+  ["lib/navigate.lua"] = "common/navigate.lua",
 }
 local POCKET = {
-  ["colony.lua"]     = "pocket/colony.lua",
-  ["buddy.lua"]      = "pocket/buddy.lua",
-  ["buddycmd.lua"]   = "common/buddycmd.lua",
-  ["statusview.lua"] = "common/statusview.lua",
+  ["buddy.lua"]          = "pocket/buddy.lua",
+  ["colony.lua"]         = "pocket/colony.lua",
+  ["lib/buddycmd.lua"]   = "common/buddycmd.lua",
+  ["lib/statusview.lua"] = "common/statusview.lua",
 }
-local BASE = {
-  ["startup.lua"]    = "base/base.lua",
-  ["statusview.lua"] = "common/statusview.lua",
-  ["oremap.lua"]     = "common/oremap.lua",
-  ["swarm.lua"]      = "common/swarm.lua",
+local CONTROL = {
+  ["startup.lua"]        = "base/base.lua",
+  ["lib/statusview.lua"] = "common/statusview.lua",
+  ["lib/oremap.lua"]     = "common/oremap.lua",
+  ["lib/swarm.lua"]      = "common/swarm.lua",
 }
+-- Libraries that older versions kept in the root; removed after an update.
+local LEGACY = { "chronarch.lua", "statusview.lua", "navigate.lua", "orescan.lua",
+  "oremap.lua", "swarm.lua", "buddycmd.lua" }
 
--- program -> its files and the kind of machine it needs
+-- The CHRONARCH programs. `run` says how you start it once installed.
 local PROGRAMS = {
-  mining = { files = TURTLE, needs = "turtle", about = "mining turtle" },
-  base   = { files = BASE, about = "base computer + monitor" },
-  colony = { files = POCKET, needs = "pocket", about = "pocket view of the colony" },
+  mining  = { files = TURTLE, needs = "turtle", run = "starts by itself",
+              about = "miner: harvest, scan, swarm, buddy orders" },
+  control = { files = CONTROL, run = "starts by itself",
+              about = "base + monitor: commands, map, AI, swarm" },
+  buddy   = { files = POCKET, needs = "pocket", run = "type: buddy  (or colony)",
+              about = "come here, follow, home, stash + colony view" },
 }
+local SOON = { scout = "explorer: spawners, dungeons, cities",
+               carve = "digs rooms and halls underground" }
+local ALIASES = { base = "control", colony = "buddy" } -- older names still work
+local ORDER = { "mining", "control", "buddy" }
 local PROGRAM_FILE = "/program"
 
 local function plan(program)
@@ -82,7 +94,25 @@ local function savedProgram()
   local f = fs.open(PROGRAM_FILE, "r")
   local p = (f.readAll() or ""):gsub("%s+", "")
   f.close()
+  p = ALIASES[p] or p
   return PROGRAMS[p] and p or nil
+end
+
+local function kindHere() return turtle and "turtle" or pocket and "pocket" or "computer" end
+local function guess() return turtle and "mining" or pocket and "buddy" or "control" end
+
+-- `programs-custom` / `program`: the catalog, and what this machine runs.
+local function list()
+  print("CHRONARCH programs:")
+  for _, name in ipairs(ORDER) do
+    local p = PROGRAMS[name]
+    print((" %-8s %s"):format(name, p.needs or "computer"))
+    print("   " .. p.about) -- print wraps long lines on narrow screens
+  end
+  for name, about in pairs(SOON) do print((" %-8s soon: %s"):format(name, about)) end
+  local cur = savedProgram() or guess()
+  print(("This %s runs: %s (%s)"):format(kindHere(), cur, PROGRAMS[cur].run))
+  print("Install another: program <name>")
 end
 
 -- Download one file and write it. Returns (true) or (false, reason). An empty
@@ -94,6 +124,8 @@ local function fetch(localPath, repoPath)
   local data = res.readAll()
   res.close()
   if not data or #data == 0 then return false, "empty body" end
+  local dir = fs.getDir and fs.getDir(localPath) or ""
+  if dir ~= "" and fs.makeDir then fs.makeDir(dir) end
   local f, ferr = fs.open(localPath, "w")
   if not f then return false, ferr or "cannot write" end
   f.write(data)
@@ -102,21 +134,23 @@ local function fetch(localPath, repoPath)
 end
 
 local function run(wanted)
+  if wanted == "--list" then list(); return end
+  wanted = wanted and (ALIASES[wanted] or wanted)
   if not http then
     print("HTTP is off in the CC config; cannot update.")
     return
   end
   if wanted and not PROGRAMS[wanted] then
-    print("No program '" .. wanted .. "'. Programs:")
-    for name, p in pairs(PROGRAMS) do print(("  %-8s %s"):format(name, p.about)) end
+    print("No program '" .. wanted .. "'.")
+    list()
     return
   end
-  local kind = turtle and "turtle" or pocket and "pocket" or "computer"
+  local kind = kindHere()
   if wanted and PROGRAMS[wanted].needs and PROGRAMS[wanted].needs ~= kind then
     print(("'%s' runs on a %s, this is a %s."):format(wanted, PROGRAMS[wanted].needs, kind))
     return
   end
-  local role = wanted or savedProgram() or (turtle and "mining" or pocket and "colony" or "base")
+  local role = wanted or savedProgram() or guess()
   if wanted then
     local f = fs.open(PROGRAM_FILE, "w")
     f.write(wanted)
@@ -145,6 +179,9 @@ local function run(wanted)
 
   print(("Done: %d ok, %d failed."):format(ok, fail))
   if fail == 0 then
+    for _, old in ipairs(LEGACY) do -- libraries now live in /lib
+      if fs.exists(old) then fs.delete(old) end
+    end
     print("Reboot to run the new code: hold Ctrl+R.")
   else
     print("Some files failed. Check HTTP, then run update again.")

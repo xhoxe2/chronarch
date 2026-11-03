@@ -6,6 +6,7 @@
 --
 --   colony        (Q to quit)
 
+if package then package.path = "/lib/?.lua;" .. package.path end -- our libraries live in /lib
 local proto = require("chronarch")
 local view = require("statusview")
 

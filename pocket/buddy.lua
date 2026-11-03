@@ -6,6 +6,7 @@
 -- The turtle's name can be left out when only one is around. Ctrl+T quits.
 -- Needs chronarch.lua, statusview.lua, buddycmd.lua and /chronarch.key.
 
+if package then package.path = "/lib/?.lua;" .. package.path end -- our libraries live in /lib
 local proto = require("chronarch")
 local view = require("statusview")
 local buddy = require("buddycmd")

@@ -42,7 +42,9 @@ def run(is_turtle, sha=None, is_pocket=False, args=(), saved=None):
     lua.globals().SHA = sha
     # fs.open records what path got written and with which URL's body
     lua.execute("""
-      fs = { exists = function(path) return path == "/program" and SAVED ~= nil end,
+      DELETED = {}
+      fs = { exists = function(path) return (path == "/program" and SAVED ~= nil) or path == "navigate.lua" end,
+        delete = function(path) DELETED[#DELETED + 1] = path end,
         open = function(path, mode)
         if mode == "r" then return { readAll = function() return SAVED end, close = function() end } end
         return {
@@ -54,6 +56,8 @@ def run(is_turtle, sha=None, is_pocket=False, args=(), saved=None):
     lua.globals().SAVED = saved
     lua.execute("print = function(s) OUT = (OUT or '') .. tostring(s) .. '\\n' end")
     lua.eval("function(src, ...) return load(src, 'update.lua')(...) end")(SRC, *args)
+    global LAST
+    LAST = lua
     writes = dict(lua.eval("WRITES"))
     urls = [u for u in (lua.eval("URLS")[i] for i in range(1, lua.eval("#URLS") + 1)) if "api.github.com" not in u]
     return writes, urls
@@ -65,11 +69,12 @@ RAW = "https://raw.githubusercontent.com/xhoxe2/chronarch/main/"
 writes, urls = run(is_turtle=False)
 got = set(writes.keys())
 check("base writes exactly its file set",
-      got == {"startup.lua", "statusview.lua", "oremap.lua", "swarm.lua", "chronarch.lua", "update.lua", "program.lua"}, got)
+      got == {"startup.lua", "lib/statusview.lua", "lib/oremap.lua", "lib/swarm.lua", "lib/chronarch.lua", "update.lua",
+              "program.lua", "programs-custom.lua"}, got)
 check("base startup.lua comes from base/base.lua",
       "-- body " + RAW + "base/base.lua" == writes.get("startup.lua"), writes.get("startup.lua"))
 check("base pulls oremap from common/oremap.lua",
-      writes.get("oremap.lua") == "-- body " + RAW + "common/oremap.lua", writes.get("oremap.lua"))
+      writes.get("lib/oremap.lua") == "-- body " + RAW + "common/oremap.lua", writes.get("lib/oremap.lua"))
 check("base never fetches the turtle-only files",
       not any("agent.lua" in u or "navigate.lua" in u or "mine.lua" in u for u in urls), urls)
 check("base never touches the secret key",
@@ -79,11 +84,12 @@ check("base never touches the secret key",
 writes, urls = run(is_turtle=True)
 got = set(writes.keys())
 check("turtle writes exactly its file set",
-      got == {"startup.lua", "mine.lua", "orescan.lua", "navigate.lua", "chronarch.lua", "update.lua", "program.lua"}, got)
+      got == {"startup.lua", "mine.lua", "lib/orescan.lua", "lib/navigate.lua", "lib/chronarch.lua", "update.lua",
+              "program.lua", "programs-custom.lua"}, got)
 check("turtle startup.lua comes from turtle/agent.lua",
       writes.get("startup.lua") == "-- body " + RAW + "turtle/agent.lua", writes.get("startup.lua"))
 check("turtle pulls navigate from common/navigate.lua",
-      writes.get("navigate.lua") == "-- body " + RAW + "common/navigate.lua", writes.get("navigate.lua"))
+      writes.get("lib/navigate.lua") == "-- body " + RAW + "common/navigate.lua", writes.get("lib/navigate.lua"))
 check("turtle never fetches the base-only files",
       not any("base.lua" in u or "statusview.lua" in u or "oremap.lua" in u for u in urls), urls)
 
@@ -95,8 +101,8 @@ check("update.lua refreshes itself",
 # --- pocket computer role ---
 writes, urls = run(is_turtle=False, is_pocket=True)
 check("pocket writes exactly its file set",
-      set(writes) == {"colony.lua", "buddy.lua", "buddycmd.lua", "statusview.lua", "chronarch.lua", "update.lua",
-                      "program.lua"}, set(writes))
+      set(writes) == {"colony.lua", "buddy.lua", "lib/buddycmd.lua", "lib/statusview.lua", "lib/chronarch.lua",
+                      "update.lua", "program.lua", "programs-custom.lua"}, set(writes))
 check("pocket gets colony from pocket/colony.lua", writes.get("colony.lua") == "-- body " + RAW + "pocket/colony.lua")
 check("pocket never takes over startup", "startup.lua" not in writes)
 
@@ -104,13 +110,28 @@ check("pocket never takes over startup", "startup.lua" not in writes)
 writes, urls = run(is_turtle=True, args=("mining",))
 check("update mining on a turtle saves the choice", writes.get("/program") == "mining", writes.get("/program"))
 check("...and installs the mining files and the program command",
-      "navigate.lua" in writes and "program.lua" in writes, set(writes))
+      "lib/navigate.lua" in writes and "program.lua" in writes, set(writes))
 writes, urls = run(is_turtle=False, args=("mining",))
 check("mining refused on a plain computer", not writes, set(writes))
 writes, urls = run(is_turtle=True, args=("dancing",))
 check("unknown program: nothing written", not writes, set(writes))
 writes, urls = run(is_turtle=False, saved="colony", is_pocket=True)
 check("saved program is used next time", "colony.lua" in writes and "startup.lua" not in writes, set(writes))
+
+# --- tidy root: old root copies of the libraries are removed ---
+writes, urls = run(is_turtle=True)
+check("old root library copies are deleted after an update",
+      "navigate.lua" in list(LAST.eval("DELETED").values()), list(LAST.eval("DELETED").values()))
+check("secret key never deleted", "chronarch.key" not in list(LAST.eval("DELETED").values()))
+
+# --- the catalog (programs-custom) ---
+writes, urls = run(is_turtle=False, args=("--list",))
+out = LAST.eval("OUT") or ""
+check("catalog lists our programs and what is coming",
+      all(n in out for n in ("mining", "control", "buddy", "scout", "carve")), out)
+check("catalog needs no internet, writes nothing", not writes and not urls)
+writes, urls = run(is_turtle=False, args=("base",))
+check("old name 'base' still installs the control program", "lib/oremap.lua" in writes, set(writes))
 
 # --- pinned to the latest commit (dodges the raw CDN cache) ---
 SHA = "04809c82e023cd07b41385c09432b85df70f7aa8"

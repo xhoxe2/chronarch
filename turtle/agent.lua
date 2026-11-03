@@ -11,6 +11,7 @@
 -- the turtle, a name: label set Miner1. The same /chronarch.key must be on the
 -- base and on every turtle.
 
+if package then package.path = "/lib/?.lua;" .. package.path end -- our libraries live in /lib
 local proto = require("chronarch")
 local orescan = require("orescan")
 local nav = require("navigate")

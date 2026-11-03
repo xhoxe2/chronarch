@@ -7,6 +7,7 @@
 -- same key as on the turtles).
 -- Commands: help | list | mine <name> <length> [depth] | ask <question> | clear
 
+if package then package.path = "/lib/?.lua;" .. package.path end -- our libraries live in /lib
 local proto = require("chronarch")
 local view = require("statusview")
 local oremap = require("oremap")
