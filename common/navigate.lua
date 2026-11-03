@@ -522,6 +522,17 @@ local function unloadHere()
   return all
 end
 
+M.unloadHere = unloadHere
+M.turnTo = function(h) turnTo(h % 4) end
+
+-- For trips outside mineArea (the buddy's "come here"): what aborts movement
+-- (a stop order) and what runs after every step (live position, chunk
+-- loading). Pass nils to clear.
+function M.setHooks(shouldStop, onMove)
+  stopFn = shouldStop
+  stepReport = onMove and function() onMove({ x = state.x, y = state.y, z = state.z }) end or nil
+end
+
 -- Drop junk into the hole below (or wherever it falls). Facing is unchanged.
 function M.dropJunk()
   for s = 1, 16 do

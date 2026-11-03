@@ -63,17 +63,6 @@ local function saveHome()
 end
 loadHome()
 
--- With a GPS constellation (4 computers running `gps host x y z`) ask where
--- we are: called at home (start-up, start of a job), so that is home.
--- Without one this quietly finds nothing.
-local function gpsHomeY()
-  if not (gps and gps.locate) then return end
-  local x, y, z = gps.locate(1)
-  if not y then return end
-  homeX, homeY, homeZ = math.floor(x + 0.5), math.floor(y + 0.5), math.floor(z + 0.5)
-  saveHome()
-end
-
 -- What the turtle learned on earlier jobs (ore seen, tunnels, scanned spots).
 local MEMORY_FILE = "/memory.txt"
 local function readFile(path)
@@ -198,16 +187,72 @@ end
 
 -- Work out the heading. Best: by the chest beside home (no step, no ores
 -- needed). Fallback: scan, step some clear way, scan again, deduce.
+-- Where we are by GPS (whole blocks), or nil without a GPS constellation.
+local function gpsHere()
+  if not (gps and gps.locate) then return nil end
+  local x, y, z = gps.locate(1)
+  if not x then return nil end
+  return { x = math.floor(x + 0.5), y = math.floor(y + 0.5), z = math.floor(z + 0.5) }
+end
+
+-- Heading by GPS, anywhere (not only by the chest at home): ask, step one
+-- block, ask again; the difference is the way we face.
+local function gpsCalibrate(here)
+  if not (here and homeX) then return false, "no GPS" end
+  local moved, me = nav.probeAnyDir()
+  if not moved then return false, "cannot move to calibrate: " .. tostring(me) end
+  local there = gpsHere()
+  if not there then return false, "GPS lost" end
+  local dx, dz = there.x - here.x, there.z - here.z
+  local h = (dx == 1 and 0) or (dz == 1 and 1) or (dx == -1 and 2) or (dz == -1 and 3)
+  if not h then return false, "GPS step unclear" end
+  nav.reset(there.x - homeX, there.y - homeY, there.z - homeZ, h)
+  return true, h
+end
+
+-- Once per boot (navReady stays true after that: every turn and step is
+-- tracked, scans correct drift). Away from home: by GPS. At home: by the
+-- chest, which also tells home's GPS position. Last resort: ore voting.
+local navReady, memoryLoaded = false, false
 local function calibrateHeading()
+  local here = gpsHere()
+  local away = here and homeX and (here.x ~= homeX or here.y ~= homeY or here.z ~= homeZ)
+  if away then
+    local ok, e = gpsCalibrate(here)
+    navReady = ok
+    return ok, e
+  end
   nav.reset()
   local a = scanOnce()
   local okc, h = nav.calibrateByChest(a)
-  if okc then return true, h end
+  if okc then
+    if here then
+      homeX, homeY, homeZ = here.x, here.y, here.z
+      saveHome()
+    end
+    if not memoryLoaded then nav.importMemory(readFile(MEMORY_FILE)); memoryLoaded = true end
+    navReady = true
+    return true, h
+  end
+  if here and homeX then
+    local ok, e = gpsCalibrate(here)
+    navReady = ok
+    return ok, e
+  end
   if type(a) ~= "table" or #a == 0 then return false, "no ores to calibrate heading" end
   local moved, me = nav.probeAnyDir()
   if not moved then return false, "cannot move to calibrate: " .. tostring(me) end
   local b = scanOnce()
-  return nav.deduceHeading(a, b)
+  local ok, e = nav.deduceHeading(a, b)
+  navReady = ok
+  return ok, e
+end
+
+local function ensureNav(j)
+  if navReady then return true end
+  local ok, e = calibrateHeading()
+  if not ok then proto.send(secret, j.from, { type = "dig", name = name, ok = false, text = tostring(e) }) end
+  return ok
 end
 
 local function doScan(j)
@@ -231,11 +276,8 @@ end
 -- Dig to an ore at (x,y,z) relative to the turtle's scan spot: calibrate, walk
 -- there digging, take the whole connected vein, come back, unload.
 local function doDig(j)
-  local okc, h = calibrateHeading()
-  if not okc then
-    proto.send(secret, j.from, { type = "dig", name = name, ok = false, text = tostring(h) })
-    return
-  end
+  if not ensureNav(j) then return end
+  local h = select(4, nav.pos())
   local reached, re = nav.travel(j.x or 0, j.y or 0, j.z or 0)
   local mined = 0
   if reached then mined = nav.mineVein() end
@@ -255,13 +297,15 @@ end
 -- every ore within radius, far past a single scan's reach. Comes home, unloads.
 local function doMineArea(j)
   abort = false
-  gpsHomeY() -- at home now: the GPS height (if any) is the home height
-  local okc, h = calibrateHeading()
-  if not okc then
-    proto.send(secret, j.from, { type = "dig", name = name, ok = false, text = tostring(h) })
-    return
+  if not ensureNav(j) then return end
+  -- "dig here" from the pocket computer: the player's world position
+  if j.wx then
+    if not homeX then
+      proto.send(secret, j.from, { type = "dig", name = name, ok = false, text = "no GPS: cannot find you" })
+      return
+    end
+    j.cx, j.cy, j.cz = j.wx - homeX, j.wy - homeY, j.wz - homeZ
   end
-  nav.importMemory(readFile(MEMORY_FILE))
   local radius = j.radius or 12
   local last, lastMove = 0, 0
   local opts = {
@@ -358,6 +402,84 @@ local function doMine(j)
   proto.send(secret, j.from, { type = "done", name = name, ok = finished, fuel = turtle.getFuelLevel() })
 end
 
+-- Buddy (pocket computer) orders --------------------------------------------
+local gotoTarget -- the latest "come here" spot (world coords); updated while walking
+
+local function tripHooks()
+  nav.setHooks(function() return abort end, function(pos) anchorTick(pos) end)
+end
+
+-- Walk to the player. While walking, a newer "come here" (follow mode) just
+-- moves the target; a stop order halts the turtle where it is.
+local function doGoto(j)
+  abort = false
+  if not homeX then
+    proto.send(secret, j.from, { type = "log", name = name, text = "no GPS: I cannot find you" })
+    return
+  end
+  if not ensureNav(j) then return end
+  tripHooks()
+  local tries, why = 0, nil
+  while true do
+    local t = gotoTarget
+    local tx, ty, tz = t.x - homeX, t.y - homeY, t.z - homeZ
+    local function near()
+      local x, y, z = nav.pos()
+      return math.abs(x - tx) + math.abs(y - ty) + math.abs(z - tz) <= (t.near or 2)
+    end
+    if near() then break end
+    local x, y, z = nav.pos()
+    local need = math.abs(x - tx) + math.abs(y - ty) + math.abs(z - tz) + math.abs(tx) + math.abs(ty) + math.abs(tz) + 40
+    nav.ensureFuel(need)
+    local fuel = turtle.getFuelLevel()
+    if type(fuel) == "number" and fuel < need then sos = "low fuel"; why = "not enough fuel to come and go home"; break end
+    nav.travel(tx, ty, tz, function() return near() or gotoTarget ~= t or abort end)
+    if abort then why = "stopped"; break end
+    if gotoTarget == t and not near() then
+      tries = tries + 1
+      if tries >= 3 then why = "cannot get to you"; break end
+    end
+  end
+  nav.setHooks(nil, nil)
+  proto.send(secret, j.from, { type = "log", name = name, text = why or "here!" })
+end
+
+local function doHome(j)
+  abort = false
+  if not ensureNav(j) then return end
+  tripHooks()
+  nav.travel(0, 0, 0)
+  nav.setHooks(nil, nil)
+  local x, y, z = nav.pos()
+  local dropped = (x == 0 and y == 0 and z == 0) and nav.deposit()
+  proto.send(secret, j.from, { type = "log", name = name,
+    text = (x == 0 and y == 0 and z == 0) and ("home" .. (dropped and ", unloaded" or "")) or "could not get home" })
+end
+
+local function doStash(j)
+  local ok = nav.unloadHere()
+  proto.send(secret, j.from, { type = "log", name = name,
+    text = ok and "loot is in the ender chest" or "no EnderStorage chest with me (or it is full)" })
+end
+
+-- Put a torch down next to us: on the first side with room for it.
+local function doLight(j)
+  local slot = findItem("minecraft:torch")
+  if not slot then
+    proto.send(secret, j.from, { type = "log", name = name, text = "give me torches" })
+    return
+  end
+  local placed = false
+  for _ = 1, 4 do
+    turtle.select(slot)
+    if turtle.place() then placed = true; break end
+    local _, _, _, h = nav.pos()
+    nav.turnTo(h + 1)
+  end
+  turtle.select(1)
+  proto.send(secret, j.from, { type = "log", name = name, text = placed and "torch placed" or "no room for a torch here" })
+end
+
 local function listener()
   while true do
     local from, msg = proto.receive(secret) -- only correctly signed messages return
@@ -367,6 +489,23 @@ local function listener()
       homeY = math.floor(tonumber(msg.y))
       saveHome()
       proto.send(secret, from, { type = "log", name = name, text = "home height set to y=" .. homeY })
+    elseif msg.cmd == "goto" and tonumber(msg.x) and tonumber(msg.y) and tonumber(msg.z) then
+      gotoTarget = { x = tonumber(msg.x), y = tonumber(msg.y), z = tonumber(msg.z), near = tonumber(msg.near) or 2 }
+      if state == "idle" then
+        state = "coming"
+        job = { from = from, kind = "goto" }
+        os.queueEvent("chronarch_job")
+      elseif state ~= "coming" then
+        proto.send(secret, from, { type = "log", name = name, text = "Busy, come-here ignored" })
+      end -- already coming: the new spot is picked up on the way
+    elseif msg.cmd == "home" or msg.cmd == "stash" or msg.cmd == "light" then
+      if state ~= "idle" then
+        proto.send(secret, from, { type = "log", name = name, text = "Busy, " .. msg.cmd .. " ignored" })
+      else
+        state = msg.cmd == "home" and "returning" or msg.cmd
+        job = { from = from, kind = msg.cmd }
+        os.queueEvent("chronarch_job")
+      end
     elseif msg.cmd == "forget" then
       if fs.exists(MEMORY_FILE) then fs.delete(MEMORY_FILE) end
       proto.send(secret, from, { type = "log", name = name, text = "memory cleared" })
@@ -405,6 +544,7 @@ local function listener()
         job = { from = from, area = true, radius = tonumber(msg.radius) or 12,
           ore = type(msg.ore) == "string" and msg.ore:match("^[%w_]+$") or nil,
           explore = msg.explore == true,
+          wx = tonumber(msg.wx), wy = tonumber(msg.wy), wz = tonumber(msg.wz),
           bounds = (type(msg.bounds) == "table" and tonumber(msg.bounds.x1) and tonumber(msg.bounds.x2)
             and tonumber(msg.bounds.z1) and tonumber(msg.bounds.z2))
             and { x1 = tonumber(msg.bounds.x1), x2 = tonumber(msg.bounds.x2),
@@ -432,7 +572,11 @@ local function worker()
     sos = nil -- a new order: start clean
     wearPickaxe()
     anchorX, anchorZ, anchorAt = 0, 0, -math.huge
-    if j.scan then doScan(j) elseif j.dig then doDig(j) elseif j.area then doMineArea(j) else doMine(j) end
+    if j.kind == "goto" then doGoto(j)
+    elseif j.kind == "home" then doHome(j)
+    elseif j.kind == "stash" then doStash(j)
+    elseif j.kind == "light" then doLight(j)
+    elseif j.scan then doScan(j) elseif j.dig then doDig(j) elseif j.area then doMineArea(j) else doMine(j) end
     state, job = "idle", nil
     wearAnchor()
   end
@@ -440,6 +584,12 @@ end
 
 print(("CHRONARCH agent '%s' (#%d) online"):format(name, os.getComputerID()))
 wearAnchor()
-gpsHomeY() -- the map then shows world coordinates from the start, like `gps locate`
+do -- where are we? (the map shows world coordinates from the start, like `gps locate`)
+  local here = gpsHere()
+  if here then
+    if not homeX then homeX, homeY, homeZ = here.x, here.y, here.z; saveHome() end
+    nav.reset(here.x - homeX, here.y - homeY, here.z - homeZ, 0) -- heading unknown until a job
+  end
+end
 proto.broadcast(secret, statusBody())
 parallel.waitForAny(listener, worker)

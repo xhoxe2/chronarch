@@ -95,7 +95,8 @@ check("update.lua refreshes itself",
 # --- pocket computer role ---
 writes, urls = run(is_turtle=False, is_pocket=True)
 check("pocket writes exactly its file set",
-      set(writes) == {"colony.lua", "statusview.lua", "chronarch.lua", "update.lua", "program.lua"}, set(writes))
+      set(writes) == {"colony.lua", "buddy.lua", "buddycmd.lua", "statusview.lua", "chronarch.lua", "update.lua",
+                      "program.lua"}, set(writes))
 check("pocket gets colony from pocket/colony.lua", writes.get("colony.lua") == "-- body " + RAW + "pocket/colony.lua")
 check("pocket never takes over startup", "startup.lua" not in writes)
 

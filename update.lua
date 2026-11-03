@@ -51,6 +51,8 @@ local TURTLE = {
 }
 local POCKET = {
   ["colony.lua"]     = "pocket/colony.lua",
+  ["buddy.lua"]      = "pocket/buddy.lua",
+  ["buddycmd.lua"]   = "common/buddycmd.lua",
   ["statusview.lua"] = "common/statusview.lua",
 }
 local BASE = {

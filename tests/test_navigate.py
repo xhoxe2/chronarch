@@ -627,6 +627,25 @@ check("stripe: mines the ore in its stripe", W.get(14, -2, -5) is None and W.get
 check("stripe: leaves the other turtle's ore", W.get(-6, -2, 3) == "minecraft:iron_ore")
 check("stripe: back home", (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0))
 
+# 39. A trip with hooks (buddy "come here"): stops near the target, reports
+#     every step, a stop order halts it where it is (no going home).
+lua, W, nav, scan = make()
+W.h = 0
+W.fuel = 2000
+nav.reset(0, 0, 0, 0)
+lua.execute("STEPS = 0; HALT = false")
+nav.setHooks(lua.eval("function() return HALT end"), lua.eval("function(p) STEPS = STEPS + 1 end"))
+near = lua.eval("function(nav) return function() local x, y, z = nav.pos() return math.abs(x - 10) + math.abs(z - 4) <= 2 end end")(nav)
+nav.travel(10, 0, 4, near)
+x, y, z, h = nav.pos()
+check("hooks: stops within 2 of the target", abs(x - 10) + abs(z - 4) <= 2 and (W.pos.x, W.pos.z) == (x, z), (x, z))
+check("hooks: reports every step", lua.eval("STEPS") == W.moves, (lua.eval("STEPS"), W.moves))
+lua.execute("HALT = true")
+moves = W.moves
+nav.travel(-5, 0, -5)
+check("hooks: a stop halts the trip on the spot", W.moves == moves)
+nav.setHooks(None, None)
+
 # 10. ensureFuel burns coal from the inventory when fuel runs low.
 lua, W, nav, scan = make()
 W.fuel = 5
