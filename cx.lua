@@ -78,7 +78,9 @@ local PROGRAMS = {
 local ORDER = { "mining", "control", "buddy", "gps" }
 local SOON = { { "scout", "explorer: spawners, dungeons, cities" },
                { "carve", "digs rooms and halls underground" } }
-local ALIASES = { base = "control", colony = "buddy" } -- older names still work
+-- Other names people type (and older names) for the same programs.
+local ALIASES = { base = "control", colony = "buddy", miner = "mining", mine = "mining",
+  helper = "buddy", pocket = "buddy", turtle = "mining" }
 -- Libraries that older versions kept in the root; removed after an update.
 local LEGACY = { "chronarch.lua", "statusview.lua", "navigate.lua", "orescan.lua",
   "oremap.lua", "swarm.lua", "buddycmd.lua" }
@@ -174,14 +176,16 @@ local function where()
   print("cx help | cx list | cx update")
 end
 
+-- One line per program; the descriptions only where there is room for them
+-- (a pocket computer is 26 wide).
 local function list()
+  local wide = not (term and term.getSize) or term.getSize() >= 40
   print("CHRONARCH programs:")
   for _, name in ipairs(ORDER) do
     local p = PROGRAMS[name]
-    print((" %-8s %s"):format(name, p.needs))
-    print("   " .. p.about) -- print wraps long lines on narrow screens
+    print((" %-8s %-8s %s"):format(name, p.needs, wide and p.about or ""))
   end
-  for _, s in ipairs(SOON) do print((" %-8s soon: %s"):format(s[1], s[2])) end
+  for _, s in ipairs(SOON) do print((" %-8s soon     %s"):format(s[1], wide and s[2] or "")) end
   print(("This %s runs: %s"):format(kindHere(), current()))
   print("Change: cx install <name>")
 end
@@ -197,12 +201,15 @@ local function install(name, ...)
   name = name and (ALIASES[name] or name)
   local p = PROGRAMS[name or ""]
   if not p then
-    print("No program '" .. tostring(name) .. "'.")
-    list()
+    -- short, so it stays on screen: no list dump
+    print(("No program '%s'."):format(tostring(name)))
+    print("Programs: mining, control, buddy, gps")
+    print("This " .. kindHere() .. " can run: " .. (turtle and "mining" or pocket and "buddy" or "control, gps"))
     return
   end
   if p.needs ~= kindHere() then
-    print(("'%s' runs on a %s, this is a %s."):format(name, p.needs, kindHere()))
+    print(("'%s' is for a %s,"):format(name, p.needs))
+    print(("this is a %s: it runs %s."):format(kindHere(), current()))
     return
   end
   if name == "gps" then -- a GPS host has to know where it stands

@@ -84,7 +84,12 @@ check("install saves the choice", r.writes.get("/.program") == "mining", r.write
 r = Run("computer", ("install", "mining"))
 check("mining refused on a computer", not r.writes and "turtle" in r.out, r.out)
 r = Run("turtle", ("install", "dancing"))
-check("unknown program: nothing written, list shown", not r.writes and "mining" in r.out)
+check("unknown program: short answer, nothing written", not r.writes and "No program" in r.out
+      and len(r.out.strip().split("\n")) <= 3, r.out)
+r = Run("turtle", ("install", "miner"))
+check("'miner' means mining", r.writes.get("/.program") == "mining", r.writes.get("/.program"))
+r = Run("pocket", ("install", "miner"))
+check("mining on a pocket: says what this machine runs", not r.writes and "pocket" in r.out and "buddy" in r.out, r.out)
 r = Run("computer", ("install", "base"))
 check("old name base installs control", r.writes.get("/.program") == "control")
 r = Run("pocket", ("update",), saved="colony")
