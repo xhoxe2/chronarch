@@ -36,19 +36,32 @@ function M.reset(x, y, z, h)
 end
 
 -- Remember a scan made at (ox,oy,oz) with radius r: every cell in its cube is
--- air unless the scan listed a block there.
+-- air unless the scan listed a block there. Ordinary blocks are not stored:
+-- for planning a never-seen cell already counts as stone, and a radius-16
+-- scan underground is ~35000 blocks of it. Kept: air, liquids, protected.
+local function keepInMap(name)
+  return name:find("water") or name:find("lava") or name == "minecraft:bedrock"
+    or name:find("^computercraft:") or name:find("chest") or name:find("barrel") or name:find("shulker")
+end
 function M.remember(blocks, ox, oy, oz, r)
   if type(blocks) ~= "table" then return end
-  for x = ox - r, ox + r do
-    for y = oy - r, oy + r do
-      for z = oz - r, oz + r do world[wkey(x, y, z)] = false end
-    end
-  end
+  local listed = {}
   for _, b in ipairs(blocks) do
     if b.name then
       local k = wkey(ox + b.x, oy + b.y, oz + b.z)
-      world[k] = b.name
+      listed[k] = b.name
       if b.name:find("lava") then lavaCells[k] = true end
+    end
+  end
+  for x = ox - r, ox + r do
+    for y = oy - r, oy + r do
+      for z = oz - r, oz + r do
+        local k = wkey(x, y, z)
+        local name = listed[k]
+        if not name then world[k] = false
+        elseif keepInMap(name) then world[k] = name
+        else world[k] = nil end
+      end
     end
   end
 end
@@ -346,7 +359,8 @@ function M.mineVein()
   return veinMined
 end
 
-local AREA_SCAN_R = 8 -- the Geo Scanner's free radius; bigger costs fuel/is capped
+local AREA_SCAN_R = 8 -- the Geo Scanner's free radius: quick scans on the go
+local FAR_SCAN_R = 16 -- its biggest radius (a little fuel): scans at stops
 
 local function oreData(o, only)
   if type(o) ~= "table" or not o.name then return false end
@@ -532,9 +546,10 @@ end
 -- Returns (ores mined, reason string).
 function M.mineArea(scanFn, areaRadius, opts)
   opts = opts or {}
-  local step = opts.step or 14         -- spacing of exploration points (<= 2 * scan radius)
+  local far = opts.farScan or FAR_SCAN_R -- radius of the scans at stops
+  local step = opts.step or (2 * far - 4) -- spacing of exploration points (scans overlap)
+  local half = math.floor(step / 2)
   local scanEvery = opts.scanEvery or 6 -- steps between scans on the go
-  local cover = opts.cover or 4        -- a point counts as explored if scanned within this
   local fuelBuffer = opts.fuelBuffer or 40
   local only = opts.only               -- e.g. "diamond": mine only ore with this in its name
   local onProgress = opts.onProgress   -- function(remainingOres, {x,y,z}) for the live map
@@ -548,22 +563,30 @@ function M.mineArea(scanFn, areaRadius, opts)
   local scans = scanLog      -- where we have scanned (this job and remembered ones)
   local lavaBelow = opts.lavaBelow or 5000 -- go out of our way for lava under this fuel
 
-  local function axis(lo, hi)
-    local t, v = {}, lo
-    while v <= hi do t[#t + 1] = v; v = v + step end
-    if t[#t] ~= hi then t[#t + 1] = hi end
+  -- Exploration points: a grid centred on the area's centre, `step` apart,
+  -- plus the edges when the last point's box would not reach them.
+  local function axis(c, lo, hi)
+    local t = { c }
+    for _, dir in ipairs({ 1, -1 }) do
+      local v = c + dir * step
+      while v >= lo and v <= hi do t[#t + 1] = v; v = v + dir * step end
+      local edge = dir == 1 and hi or lo
+      if math.abs(edge - (v - dir * step)) > half then t[#t + 1] = edge end
+    end
     return t
   end
-  local xs = axis(cx0 - areaRadius, cx0 + areaRadius)
-  local zs = axis(cz0 - areaRadius, cz0 + areaRadius)
-  local ys
+  local xs = axis(cx0, cx0 - areaRadius, cx0 + areaRadius)
+  local zs = axis(cz0, cz0 - areaRadius, cz0 + areaRadius)
+  -- With a centre (the ore's best depth, or a tapped cluster) search one flat
+  -- layer there: ore sits in height bands and a far scan sees +-16 up and
+  -- down. Without one, search below home.
+  local ys, ylo, yhi
   if opts.center then
-    ys = (areaRadius <= AREA_SCAN_R) and { cy0 } or axis(cy0 - areaRadius, cy0 + areaRadius)
+    ys, ylo, yhi = { cy0 }, cy0 - areaRadius, cy0 + areaRadius
   else
-    ys = (areaRadius <= AREA_SCAN_R) and { 0 } or axis(-areaRadius, 0) -- ore is below home
+    ys, ylo, yhi = axis(0, -areaRadius, 0), -areaRadius, 0
   end
   local points = {}
-  if areaRadius <= AREA_SCAN_R then ys = {} end -- one scan already sees it all
   for _, yy in ipairs(ys) do
     for _, zz in ipairs(zs) do
       for _, xx in ipairs(xs) do points[#points + 1] = { x = xx, y = yy, z = zz } end
@@ -642,13 +665,17 @@ function M.mineArea(scanFn, areaRadius, opts)
   end
 
   local sinceScan = 0
+  -- quick: a free radius-8 scan on the go, no waiting on the cooldown.
+  -- Otherwise a far scan (stops). scanFn may return the radius it really used
+  -- (a server capped below 16 falls back to 8).
   local function scanHere(quick)
-    local blocks = scanFn(AREA_SCAN_R, quick)
+    local blocks, r = scanFn(quick and AREA_SCAN_R or far, quick)
     if type(blocks) ~= "table" then return false end
+    r = r or (quick and AREA_SCAN_R or far)
     correct(blocks)
-    M.remember(blocks, state.x, state.y, state.z, AREA_SCAN_R)
+    M.remember(blocks, state.x, state.y, state.z, r)
     sinceScan = 0
-    scans[#scans + 1] = { x = state.x, y = state.y, z = state.z }
+    scans[#scans + 1] = { x = state.x, y = state.y, z = state.z, r = r }
     while #scanLog > 400 do table.remove(scanLog, 1) end
     local seen = {}
     for _, o in ipairs(blocks) do
@@ -664,8 +691,7 @@ function M.mineArea(scanFn, areaRadius, opts)
     end
     -- Ghosts: ore in this scan's range that it no longer returns was dug out.
     local function near(x, y, z)
-      return math.abs(x - state.x) <= AREA_SCAN_R and math.abs(y - state.y) <= AREA_SCAN_R
-        and math.abs(z - state.z) <= AREA_SCAN_R
+      return math.abs(x - state.x) <= r and math.abs(y - state.y) <= r and math.abs(z - state.z) <= r
     end
     for k, o in pairs(found) do
       if not seen[k] and near(o.x, o.y, o.z) then found[k] = nil end
@@ -688,9 +714,18 @@ function M.mineArea(scanFn, areaRadius, opts)
     end
   end
 
+  -- A point stands for the box of the area around it (+-half). It is explored
+  -- once some scan saw all of that box (clipped to the area).
+  local lo = { x = cx0 - areaRadius, y = ylo, z = cz0 - areaRadius }
+  local hi = { x = cx0 + areaRadius, y = yhi, z = cz0 + areaRadius }
   local function explored(p)
     for _, sc in ipairs(scans) do
-      if math.max(math.abs(sc.x - p.x), math.abs(sc.y - p.y), math.abs(sc.z - p.z)) <= cover then return true end
+      local R, all = sc.r or AREA_SCAN_R, true
+      for _, a in ipairs({ "x", "y", "z" }) do
+        local l, h = math.max(p[a] - half, lo[a]), math.min(p[a] + half, hi[a])
+        if l < sc[a] - R or h > sc[a] + R then all = false; break end
+      end
+      if all then return true end
     end
     return false
   end
@@ -746,11 +781,14 @@ function M.mineArea(scanFn, areaRadius, opts)
       grab()
       report()
     else
-      local next, nd
+      -- Spiral outwards: closest to the centre first (so a plain harvest does
+      -- not wander far), and among those the one closest to where we are.
+      local next, nd, ns
       for _, p in ipairs(points) do
         if not p.done and not explored(p) then
           local d = dist(p)
-          if not nd or d < nd then next, nd = p, d end
+          local sc = math.abs(p.x - cx0) + math.abs(p.y - cy0) + math.abs(p.z - cz0) + 0.5 * d
+          if not ns or sc < ns then next, nd, ns = p, d, sc end
         end
       end
       -- done: area swept, or (plain harvest) we found and mined what we came for
@@ -875,7 +913,7 @@ function M.exportMemory()
   local out = { "H " .. tostring(M.chestH) }
   for k, name in pairs(oreMemory) do out[#out + 1] = "O " .. k .. " " .. name end
   for k in pairs(opened) do out[#out + 1] = "A " .. k end
-  for _, sc in ipairs(scanLog) do out[#out + 1] = ("S %d,%d,%d"):format(sc.x, sc.y, sc.z) end
+  for _, sc in ipairs(scanLog) do out[#out + 1] = ("S %d,%d,%d %d"):format(sc.x, sc.y, sc.z, sc.r or AREA_SCAN_R) end
   return table.concat(out, "\n")
 end
 
@@ -890,7 +928,7 @@ function M.importMemory(text)
     elseif tag == "A" then opened[k] = true; world[k] = false
     elseif tag == "S" then
       local x, y, z = k:match("^(-?%d+),(-?%d+),(-?%d+)$")
-      scanLog[#scanLog + 1] = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
+      scanLog[#scanLog + 1] = { x = tonumber(x), y = tonumber(y), z = tonumber(z), r = tonumber(rest) or AREA_SCAN_R }
     end
   end
   return true

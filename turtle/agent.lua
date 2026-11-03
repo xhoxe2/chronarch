@@ -41,6 +41,7 @@ local equipTool = (toolSide == "left") and turtle.equipLeft or turtle.equipRight
 local SCANNER_ITEM = "advancedperipherals:geo_scanner"
 
 local state, job = "idle", nil
+local sos -- why the turtle needs help ("low fuel", "stuck away from home"...), or nil
 
 -- The turtle's home height (y of the spot by the chest). There is no GPS, so
 -- the player tells it once with `sety <name> <y>` on the base; kept in a file.
@@ -53,14 +54,15 @@ local function loadHomeY()
   return y
 end
 local homeY = loadHomeY()
+local homeX, homeZ -- world x/z of home, known only with GPS
 
 -- With a GPS constellation (4 computers running `gps host x y z`) the turtle
 -- learns its height by itself; without one this quietly finds nothing.
 local function gpsHomeY()
   if not (gps and gps.locate) then return end
-  local _, y = gps.locate(1)
+  local x, y, z = gps.locate(1)
   if not y then return end
-  homeY = math.floor(y + 0.5)
+  homeX, homeY, homeZ = math.floor(x + 0.5), math.floor(y + 0.5), math.floor(z + 0.5)
   local f = fs.open(HOME_Y_FILE, "w")
   f.write(tostring(homeY))
   f.close()
@@ -78,7 +80,13 @@ end
 local abort = false -- set by a "stop" order; the harvest checks it and comes home
 
 local function statusBody()
-  return { type = "status", name = name, fuel = turtle.getFuelLevel(), state = state, homeY = homeY }
+  local rx, ry, rz = nav.pos()
+  local pos = { x = rx, y = ry, z = rz }
+  if homeX then pos = { x = homeX + rx, y = homeY + ry, z = homeZ + rz, abs = true } end
+  local fuel = turtle.getFuelLevel()
+  local why = sos or (fuel == 0 and "no fuel") or nil
+  return { type = "status", name = name, fuel = fuel, state = why and ("SOS " .. why) or state,
+    homeY = homeY, pos = pos }
 end
 
 local function findItem(item)
@@ -110,18 +118,25 @@ end
 local CAL_RADIUS = 8
 
 -- Equip the scanner, scan (retrying through its cooldown), put the pickaxe back.
--- quick = one try only (scans on the go must not stall the walk).
+-- quick = one try only (scans on the go must not stall the walk). Returns the
+-- blocks and the radius really used: a server that caps the scanner below the
+-- asked radius gets the free radius 8 instead.
 local function scanOnce(r, quick)
+  r = r or CAL_RADIUS
   local sc = equipScanner()
   if not sc then return nil end
-  local blocks
+  local blocks, err
   for _ = 1, quick and 1 or 6 do
-    blocks = sc.scanBlocks(r or CAL_RADIUS)
+    blocks, err = sc.scanBlocks(r)
     if type(blocks) == "table" then break end
-    sleep(1.5) -- Geo Scanner cooldown
+    if r > CAL_RADIUS and tostring(err):lower():find("radius") then
+      r = CAL_RADIUS
+    else
+      sleep(1.5) -- Geo Scanner cooldown
+    end
   end
   unequipScanner()
-  return blocks
+  return blocks, r
 end
 
 -- Work out the heading. Best: by the chest beside home (no step, no ores
@@ -244,6 +259,13 @@ local function doMineArea(j)
   mf.write(nav.exportMemory())
   mf.close()
   local dropped = nav.deposit()
+  local hx, hy, hz = nav.pos()
+  if hx ~= 0 or hy ~= 0 or hz ~= 0 then
+    sos = ("stuck at home+%d,%d,%d"):format(hx, hy, hz)
+  elseif reason ~= "area clear" and reason ~= "stopped" then
+    sos = tostring(reason)
+  end
+  if sos then proto.send(secret, j.from, statusBody()) end -- SOS goes out at once
   proto.send(secret, j.from, { type = "harvest", name = name, pos = { x = 0, y = 0, z = 0 }, ores = {}, done = true })
   proto.send(secret, j.from, { type = "dig", name = name, ok = reason == "area clear" or reason == "stopped",
     text = ("%s r%d%s: %d ores (%s), %s"):format(j.explore and "explore" or "harvest", radius, j.ore and (" " .. j.ore) or "", mined,
@@ -337,6 +359,7 @@ local function worker()
   while true do
     os.pullEvent("chronarch_job")
     local j = job
+    sos = nil -- a new order: start clean
     if j.scan then doScan(j) elseif j.dig then doDig(j) elseif j.area then doMineArea(j) else doMine(j) end
     state, job = "idle", nil
   end

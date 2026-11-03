@@ -57,6 +57,15 @@ local lastAuto = {} -- name -> os.clock() of the last automatic problem report t
 local commands = {}
 local runNext, autoAsk -- defined below, used by receiver()
 
+-- A turtle cried SOS: say so in red and beep if a speaker is attached.
+local speaker = peripheral.find("speaker")
+local function sosAlarm(name, state)
+  out(("[%s] %s"):format(name, state), colors.red)
+  if speaker then
+    for _ = 1, 3 do speaker.playNote("bell", 3, 18); sleep(0.2) end
+  end
+end
+
 -- Ore worth set by the player or the AI (`value <ore> <n>`), sent with every
 -- harvest so the turtle mines the most valuable ore first. Kept in a file.
 local VALUES_FILE = "/values"
@@ -105,7 +114,10 @@ local function receiver()
         if not t then
           out(("+ %s online, fuel %s"):format(msg.name, tostring(msg.fuel)), colors.lime)
         end
-        turtles[msg.name] = { id = id, fuel = msg.fuel, state = msg.state, seen = os.clock(), homeY = msg.homeY }
+        local was = t and t.state
+        turtles[msg.name] = { id = id, fuel = msg.fuel, state = msg.state, seen = os.clock(),
+          homeY = msg.homeY, pos = msg.pos }
+        if tostring(msg.state):find("^SOS") and was ~= msg.state then sosAlarm(msg.name, msg.state) end
       elseif msg.type == "log" then
         if t then t.seen = os.clock() end
         out("[" .. msg.name .. "] " .. tostring(msg.text), colors.lightGray)

@@ -376,14 +376,14 @@ W.h = 0
 W.fuel = 20000
 W.set(3, 0, 2, "minecraft:diamond_ore")
 W.set(-4, -1, -3, "minecraft:diamond_ore")
-W.set(0, -11, 11, "minecraft:diamond_ore")  # far and deep: out of sight from home
+W.set(0, -19, 22, "minecraft:diamond_ore")  # far and deep: out of a radius-16 scan from home
 nav.reset(0, 0, 0, 0)
 lua.execute("DEEPEST = 0")
 onmove = lua.eval("function(p) if p.y < DEEPEST then DEEPEST = p.y end end")
 W.default = lua.eval("function(x, y, z) if y <= -20 then return 'minecraft:bedrock' end return 'minecraft:stone' end")
-nav.mineArea(scan, 12, lua.table_from({"only": "diamond", "onMove": onmove}))
+nav.mineArea(scan, 24, lua.table_from({"only": "diamond", "onMove": onmove}))
 check("harvest takes the diamonds it sees", W.get(3, 0, 2) is None and W.get(-4, -1, -3) is None)
-check("harvest does not go searching deep", lua.eval("DEEPEST") >= -2 and W.get(0, -11, 11) == "minecraft:diamond_ore",
+check("harvest does not go searching deep", lua.eval("DEEPEST") >= -2 and W.get(0, -19, 22) == "minecraft:diamond_ore",
       lua.eval("DEEPEST"))
 check("harvest ends home", (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0))
 
@@ -579,6 +579,38 @@ check("ender: loot went into the ender chest", W.ender["minecraft:loot_1"] == 1,
 check("ender: nothing to the home chest", W.chest["minecraft:loot_1"] is None)
 check("ender: took its chest back", inv_has(W, "enderstorage:ender_chest"))
 check("ender: ores mined, home", all(W.get(*c) is None for c in ores) and (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0))
+
+# 36. Two kinds of scan: far (16) at stops, quick (8) on the go; stops are
+#     ~28 apart, so a 48-block search needs only a handful of them.
+lua, W, nav, scan = make()
+W.h = 0
+W.fuel = 40000
+W.default = lua.eval("function(x, y, z) if y <= -60 then return 'minecraft:bedrock' end return 'minecraft:stone' end")
+W.set(25, -3, 10, "minecraft:diamond_ore")  # out of sight from home (x > 16)
+lua.execute("RADII = {}")
+spy = lua.eval("function(W) return function(r, quick) RADII[#RADII + 1] = (quick and 'q' or 'f') .. r; return W.scanBlocks(r) end end")(W)
+nav.reset(0, 0, 0, 0)
+mined, reason = nav.mineArea(spy, 48, lua.table_from({"only": "diamond"}))
+radii = list(lua.eval("RADII").values())
+check("far scans are radius 16, quick ones 8", set(radii) <= {"f16", "q8"} and "f16" in radii and "q8" in radii, set(radii))
+check("near first: only a few stops to find it", radii.count("f16") <= 6, radii.count("f16"))
+check("finds the diamond out of sight", W.get(25, -3, 10) is None and mined >= 1, (mined, reason))
+
+# 37. Layer search at the ore's depth: it stays in that layer while it looks.
+lua, W, nav, scan = make()
+W.h = 0
+W.fuel = 40000
+W.default = lua.eval("function(x, y, z) if y <= -100 then return 'minecraft:bedrock' end return 'minecraft:stone' end")
+W.set(38, -35, 25, "minecraft:diamond_ore")
+nav.reset(0, 0, 0, 0)
+lua.execute("YMIN = 0; YMAXDEEP = -999; DOWN = false")
+onmove = lua.eval("function(p) if p.y < YMIN then YMIN = p.y end end")
+layer = lua.eval("function() return { only = 'diamond', center = { x = 0, y = -30, z = 0 } } end")()
+layer.onMove = onmove
+mined, reason = nav.mineArea(scan, 48, layer)
+check("layer search: finds the diamond at depth", W.get(38, -35, 25) is None and mined >= 1, (mined, reason))
+check("layer search: never wanders far below the layer", lua.eval("YMIN") >= -36, lua.eval("YMIN"))
+check("layer search: back home", (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0))
 
 # 10. ensureFuel burns coal from the inventory when fuel runs low.
 lua, W, nav, scan = make()

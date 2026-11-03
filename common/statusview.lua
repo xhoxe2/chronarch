@@ -7,7 +7,9 @@
 --   local rows = view.format(turtles, os.clock(), 12)
 --   -- rows = { { text = "...", color = "cyan" }, ... }
 --
--- turtles: name -> { id = <n>, fuel = <n>, state = <string>, seen = <os.clock> }
+-- turtles: name -> { id = <n>, fuel = <n>, state = <string>, seen = <os.clock>,
+--                   pos = { x, y, z, abs = true if world coords (GPS) } }
+-- A turtle in trouble reports state "SOS <reason>"; it is shown in red.
 
 local M = {}
 
@@ -21,7 +23,7 @@ end
 function M.format(turtles, now, staleAfter)
   local rows = {}
   rows[#rows + 1] = { text = ("CHRONARCH  %d turtle(s)"):format(count(turtles)), color = "cyan" }
-  rows[#rows + 1] = { text = ("%-10s %-7s %s"):format("NAME", "FUEL", "STATE"), color = "lightGray" }
+  rows[#rows + 1] = { text = ("%-8s %-6s %-16s %s"):format("NAME", "FUEL", "STATE", "POS"), color = "lightGray" }
 
   local names = {}
   for name in pairs(turtles) do names[#names + 1] = name end
@@ -37,17 +39,26 @@ function M.format(turtles, now, staleAfter)
     local state, color
     if not t.seen or (now - t.seen) > staleAfter then
       state, color = "offline", "red"
+    elseif tostring(t.state):find("^SOS") then
+      state, color = tostring(t.state), "red"
     elseif t.state == "busy" then
       state, color = "busy", "yellow"
     else
       state, color = t.state or "idle", "lime"
     end
     rows[#rows + 1] = {
-      text = ("%-10s %-7s %s"):format(name:sub(1, 10), tostring(t.fuel), state),
+      text = ("%-8s %-6s %-16s %s"):format(name:sub(1, 8), tostring(t.fuel), state:sub(1, 16), M.posText(t.pos)),
       color = color,
     }
   end
   return rows
+end
+
+-- "638,63,-90" for world coords (GPS), "home+3,-2,5" for coords from home.
+function M.posText(p)
+  if type(p) ~= "table" or not p.x then return "?" end
+  local xyz = ("%d,%d,%d"):format(p.x, p.y, p.z)
+  return p.abs and xyz or ("home+" .. xyz)
 end
 
 -- Plain-text colony status for the AI, appended to `ask` questions so the
@@ -64,6 +75,7 @@ function M.summary(turtles, maps, now, staleAfter)
     local line = ("%s: %s, %s, fuel %s."):format(name, online and "online" or "offline",
       online and (t.state or "idle") or "unknown", tostring(t.fuel))
     if t.homeY then line = line .. (" Home at y=%d."):format(t.homeY) end
+    if online and type(t.pos) == "table" and t.pos.x then line = line .. " At " .. M.posText(t.pos) .. "." end
     local ores = maps[name] and maps[name].ores or {}
     if #ores > 0 then
       local counts, kinds, near = {}, {}, {}

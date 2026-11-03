@@ -42,6 +42,7 @@ turtles = mk("{xhoxi = {id=0, fuel=800, state='busy', seen=99}, "
              "miner2 = {id=2, fuel=120, state='idle', seen=0}}")
 rows = lines(turtles, 100, 12)
 check("header counts 2", rows[0] == "cyan|CHRONARCH  2 turtle(s)", rows[0])
+check("header has a POS column", "POS" in rows[1], rows[1])
 check("sorted: miner2 before xhoxi", rows[2].split("|")[1].startswith("miner2")
       and rows[3].split("|")[1].startswith("xhoxi"), rows)
 check("fresh busy turtle is yellow", rows[3].startswith("yellow|") and "busy" in rows[3], rows[3])
@@ -51,6 +52,13 @@ check("fuel is shown", "800" in rows[3] and "120" in rows[2], (rows[2], rows[3])
 # a fresh idle turtle is green
 rows = lines(mk("{a = {id=1, fuel=64, state='idle', seen=100}}"), 100, 12)
 check("fresh idle turtle is lime", rows[2].startswith("lime|") and "idle" in rows[2], rows[2])
+
+# position and SOS
+rows = lines(mk("{a = {id=1, fuel=0, state='SOS no fuel', seen=100, pos={x=638, y=63, z=-90, abs=true}}, "
+                "b = {id=2, fuel=50, state='digging', seen=100, pos={x=3, y=-2, z=5}}}"), 100, 12)
+check("SOS shown in red with its reason", rows[2].startswith("red|") and "SOS no fuel" in rows[2], rows[2])
+check("world coords shown", "638,63,-90" in rows[2], rows[2])
+check("coords from home when no GPS", "home+3,-2,5" in rows[3], rows[3])
 
 # summary for the AI
 summary = lambda t, m, now=100: view.summary(t, m, now, 12)
@@ -64,6 +72,8 @@ check("summary: header + one line per turtle, sorted", len(s_) == 3 and s_[1].st
 check("summary: online turtle with state and fuel", "xhoxi: online, digging, fuel 800." in s_[2], s_[2])
 hy = summary(mk("{xhoxi = {id=0, fuel=800, state='idle', seen=99, homeY=63}}"), mk("{}")).split("\n")[1]
 check("summary: home height when known", "Home at y=63." in hy, hy)
+ps = summary(mk("{xhoxi = {id=0, fuel=800, state='idle', seen=99, pos={x=638, y=63, z=-90, abs=true}}}"), mk("{}")).split("\n")[1]
+check("summary: position for the AI", "At 638,63,-90." in ps, ps)
 check("summary: stale turtle is offline", "old: offline, unknown, fuel 5." == s_[1], s_[1])
 check("summary: ore counts, most first, mod prefix dropped",
       s_[2].endswith("Ore it knows from home: 2 iron_ore (nearest 2 blocks), 1 diamond_ore (nearest 8 blocks), "
