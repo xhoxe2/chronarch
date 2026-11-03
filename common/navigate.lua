@@ -103,15 +103,54 @@ local function turnTo(h)
   end
 end
 
--- Move to (tx,ty,tz): height first, then the x axis, then the z axis.
-function M.travel(tx, ty, tz)
-  while state.y < ty do local ok, e = stepUp(); if not ok then return false, e end end
-  while state.y > ty do local ok, e = stepDown(); if not ok then return false, e end end
-  if state.x ~= tx then turnTo(tx > state.x and 0 or 2) end
-  while state.x ~= tx do local ok, e = stepForward(); if not ok then return false, e end end
-  if state.z ~= tz then turnTo(tz > state.z and 1 or 3) end
-  while state.z ~= tz do local ok, e = stepForward(); if not ok then return false, e end end
-  return true
+-- Move to (tx,ty,tz) along a shortest path (any path along the axes is as
+-- short as the Manhattan distance; digging makes every cell passable). Height
+-- first (needs no turning), then the axis we already face, so it turns at most
+-- once. A protected block in the way (chest, computer) is walked around: the
+-- other axis order first, then over the top. stopWhen() is checked before
+-- every step: return true to end early (e.g. the target was dug from next door).
+function M.travel(tx, ty, tz, stopWhen)
+  local function enough() return stopWhen ~= nil and stopWhen() end
+  local function vertical(target)
+    while state.y ~= target do
+      if enough() then return true end
+      local ok, e
+      if state.y < target then ok, e = stepUp() else ok, e = stepDown() end
+      if not ok then return false, e end
+    end
+    return true
+  end
+  local function leg(ax)
+    local t = (ax == "x") and tx or tz
+    if state[ax] == t then return true end
+    if ax == "x" then turnTo(t > state.x and 0 or 2) else turnTo(t > state.z and 1 or 3) end
+    while state[ax] ~= t do
+      if enough() then return true end
+      local ok, e = stepForward()
+      if not ok then return false, e end
+    end
+    return true
+  end
+  local function flat()
+    local a = (state.h % 2 == 1) and "z" or "x"
+    local b = (a == "x") and "z" or "x"
+    local ok, e = leg(a)
+    if ok then ok, e = leg(b) end
+    if ok or e == "stopped" then return ok, e end
+    ok, e = leg(b) -- blocked: try round the other way
+    if ok then ok, e = leg(a) end
+    return ok, e
+  end
+
+  local ok, e = vertical(ty)
+  if not ok then return false, e end
+  ok, e = flat()
+  if ok or e == "stopped" then return ok, e end
+  if vertical(ty + 1) then -- still blocked: go over the top, then back down
+    local ok2 = flat()
+    if ok2 then return vertical(ty) end
+  end
+  return false, e
 end
 
 -- Vein mining: from the ore cell the turtle just dug into, flood-fill every
@@ -255,10 +294,57 @@ function M.mineArea(scanFn, areaRadius, opts)
     onProgress(rem, { x = state.x, y = state.y, z = state.z })
   end
 
+  -- Dig known ore straight above, below or in front without moving or turning:
+  -- a vein gets eaten from the inside, and ore passed on the way is taken too.
+  local function grab()
+    if freeSlots() < 2 then M.dropJunk() end
+    if freeSlots() == 0 then return end -- a full inventory would lose the ore
+    local function try(dx, dy, dz, dig)
+      local k = (state.x + dx) .. "," .. (state.y + dy) .. "," .. (state.z + dz)
+      if found[k] and not done[k] then
+        done[k], found[k] = true, nil
+        if dig() then mined = mined + 1 end
+      end
+    end
+    try(0, 1, 0, turtle.digUp)
+    try(0, -1, 0, turtle.digDown)
+    try(DX[state.h], 0, DZ[state.h], turtle.dig)
+  end
+
+  -- Self-check by the scan: ore we already know should show up exactly where
+  -- we expect it. If most of it shows up shifted by the same small amount, our
+  -- position is off by that much (pushed by a piston, a lost step...): fix it.
+  local function correct(blocks)
+    local votes, zero, best, bestN = {}, 0, nil, 0
+    for _, o in ipairs(blocks) do
+      if oreData(o, only) then
+        local gx, gy, gz = state.x + o.x, state.y + o.y, state.z + o.z
+        for dx = -2, 2 do for dy = -2, 2 do for dz = -2, 2 do
+          local kn = found[(gx + dx) .. "," .. (gy + dy) .. "," .. (gz + dz)]
+          if kn and kn.name == o.name then
+            if dx == 0 and dy == 0 and dz == 0 then
+              zero = zero + 1
+            else
+              local k = dx .. "," .. dy .. "," .. dz
+              votes[k] = (votes[k] or 0) + 1
+              if votes[k] > bestN then best, bestN = { dx, dy, dz }, votes[k] end
+            end
+          end
+        end end end
+      end
+    end
+    -- the true shift explains every known ore in range; demand a clear win
+    if best and bestN >= 3 and bestN >= zero + 2 then
+      state.x, state.y, state.z = state.x + best[1], state.y + best[2], state.z + best[3]
+      if opts.onFix then opts.onFix(best[1], best[2], best[3]) end
+    end
+  end
+
   local sinceScan = 0
   local function scanHere(quick)
     local blocks = scanFn(AREA_SCAN_R, quick)
     if type(blocks) ~= "table" then return false end
+    correct(blocks)
     sinceScan = 0
     scans[#scans + 1] = { x = state.x, y = state.y, z = state.z }
     local seen = {}
@@ -283,6 +369,7 @@ function M.mineArea(scanFn, areaRadius, opts)
 
   stepHook = function()
     if freeSlots() < 3 then M.dropJunk() end
+    grab()
     sinceScan = sinceScan + 1
     if sinceScan >= scanEvery then
       if not scanHere(true) then sinceScan = scanEvery - 2 end -- on cooldown: retry soon
@@ -300,28 +387,36 @@ function M.mineArea(scanFn, areaRadius, opts)
   while true do
     if opts.shouldStop and opts.shouldStop() then reason = "stopped"; break end
 
+    -- Nearest ore first; on a tie, the one we can reach without turning.
     local best, bestD, bestKey
     for k, o in pairs(found) do
       if not done[k] then
-        local d = dist(o)
+        local dx, dz = o.x - state.x, o.z - state.z
+        local straight = (dx == 0 and dz == 0)
+          or (dz == 0 and dx * DX[state.h] > 0) or (dx == 0 and dz * DZ[state.h] > 0)
+        local d = dist(o) + (straight and 0 or 0.5)
         if not bestD or d < bestD then best, bestD, bestKey = o, d, k end
       end
     end
 
     if best then
-      if not afford(bestD + homeDist(best) + fuelBuffer) then reason = "low fuel"; break end
-      done[bestKey] = true
-      if M.travel(best.x, best.y, best.z) then mined = mined + 1 end
-      found[bestKey] = nil
-      report()
       if freeSlots() < 2 then M.dropJunk() end
-      if freeSlots() == 0 then -- real loot only now: unload and come back
+      if freeSlots() == 0 then -- real loot only now: unload, then carry on from here
         local rx, ry, rz = state.x, state.y, state.z
         homing = true; M.travel(0, 0, 0); homing = false
         local ok, why = M.deposit()
         if not ok then reason = why or "inventory full, no chest"; break end
         M.travel(rx, ry, rz)
       end
+      if not afford(math.ceil(bestD) + homeDist(best) + fuelBuffer) then reason = "low fuel"; break end
+      local reached = M.travel(best.x, best.y, best.z, function() return done[bestKey] end)
+      if not done[bestKey] then -- not grabbed from next door on the way
+        done[bestKey] = true
+        if reached and state.x == best.x and state.y == best.y and state.z == best.z then mined = mined + 1 end
+      end
+      found[bestKey] = nil
+      grab()
+      report()
     else
       local next, nd
       for _, p in ipairs(points) do

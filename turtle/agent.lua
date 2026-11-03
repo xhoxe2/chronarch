@@ -185,6 +185,10 @@ local function doMineArea(j)
   }
   if j.cx then opts.center = { x = j.cx, y = j.cy or 0, z = j.cz or 0 } end
   opts.only = j.ore
+  opts.onFix = function(dx, dy, dz) -- the scan showed we were off; tell the base
+    proto.send(secret, j.from, { type = "log", name = name,
+      text = ("position corrected by scan: %d,%d,%d"):format(dx, dy, dz) })
+  end
   local mined, reason = nav.mineArea(scanOnce, radius, opts)
   local dropped = nav.deposit()
   proto.send(secret, j.from, { type = "harvest", name = name, pos = { x = 0, y = 0, z = 0 }, ores = {}, done = true })

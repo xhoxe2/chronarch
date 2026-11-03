@@ -74,8 +74,9 @@ nav.reset(0, 0, 0, 0)
 W.set(2, 0, 0, "computercraft:computer_advanced")
 W.set(3, 0, 0, "minecraft:iron_ore")
 ok = first(nav.travel(3, 0, 0))
-check("goto refuses to break a computer", (not ok) and W.get(2, 0, 0) == "computercraft:computer_advanced"
-      and W.pos.x == 1, (ok, W.get(2, 0, 0), W.pos.x))
+check("goto never breaks a computer", W.get(2, 0, 0) == "computercraft:computer_advanced", W.get(2, 0, 0))
+check("goto walks around it and still reaches the ore", ok and (W.pos.x, W.pos.y, W.pos.z) == (3, 0, 0)
+      and W.get(3, 0, 0) is None, (ok, W.pos.x, W.pos.y, W.pos.z))
 
 # 4. Round trip: go out, come back home.
 lua, W, nav, scan = make()
@@ -312,6 +313,61 @@ W.inv[2] = lua.table_from({"name": "minecraft:raw_iron", "count": 3})
 nav.dropJunk()
 check("dropJunk drops cobblestone", not W.inv[1] and W.dropped == 64)
 check("dropJunk keeps the ore", inv_has(W, "minecraft:raw_iron"))
+
+# 18. Ore next door is dug without stepping in: the turtle never enters the cell.
+lua, W, nav, scan = make()
+W.h = 0
+W.fuel = 20000
+W.set(3, 0, 0, "minecraft:iron_ore")
+W.set(3, 1, 0, "minecraft:iron_ore")  # right above the first one
+W.set(3, -1, 0, "minecraft:iron_ore")  # right below
+nav.reset(0, 0, 0, 0)
+lua.execute("VISITED = {}")
+onmove = lua.eval("function(p) VISITED[p.x .. ',' .. p.y .. ',' .. p.z] = true end")
+mined, reason = nav.mineArea(scan, 8, lua.table_from({"onMove": onmove}))
+check("vein dug from inside: all 3 mined", mined == 3 and all(W.get(3, y, 0) is None for y in (-1, 0, 1)), (mined, reason))
+check("vein dug from inside: never climbed into the upper ore cell", not lua.eval("VISITED['3,1,0']"))
+
+# 19. Fewer turns: walking the way we face, the turtle does not turn at all.
+lua, W, nav, scan = make()
+nav.reset(0, 0, 0, 1)  # facing +z
+W.h = 1
+lua.execute("TURNS = 0")
+lua.execute("local r, l = turtle.turnRight, turtle.turnLeft; turtle.turnRight = function() TURNS = TURNS + 1; return r() end; turtle.turnLeft = function() TURNS = TURNS + 1; return l() end")
+nav.travel(0, -2, 5)
+check("travel along the facing axis needs no turns", lua.eval("TURNS") == 0 and (W.pos.x, W.pos.y, W.pos.z) == (0, -2, 5),
+      (lua.eval("TURNS"), W.pos.x, W.pos.y, W.pos.z))
+nav.travel(3, -2, 9)  # z first (we face z), then a single turn to x
+check("L-shaped trip turns only once", lua.eval("TURNS") == 1 and (W.pos.x, W.pos.z) == (3, 9), lua.eval("TURNS"))
+
+# 20. Self-correction: the turtle is shoved one block mid-walk; the next scan
+#     notices the known ore is shifted, fixes the position, and it still ends home.
+lua, W, nav, scan = make()
+W.h = 0
+W.fuel = 20000
+W.set(4, 0, 0, "minecraft:iron_ore")
+for c in [(-2, 0, 5), (-2, 0, 6), (-3, 0, 5), (-3, 0, 6), (-4, 0, 5)]:
+    W.set(*c, "minecraft:coal_ore")
+nav.reset(0, 0, 0, 0)
+lua.execute("NMOVE = 0; FIXES = 0")
+shove = lua.eval("function(W) return function(p) NMOVE = NMOVE + 1; if NMOVE == 2 then W.pos.x = W.pos.x + 1 end end end")(W)
+onfix = lua.eval("function() FIXES = FIXES + 1 end")
+nav.mineArea(scan, 8, lua.table_from({"onMove": shove, "onFix": onfix}))
+check("self-correction fires", lua.eval("FIXES") >= 1, lua.eval("FIXES"))
+check("self-correction: still ends exactly home", (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0), (W.pos.x, W.pos.y, W.pos.z))
+check("self-correction: coal cluster cleared",
+      all(W.get(*c) != "minecraft:coal_ore" for c in [(-2, 0, 5), (-2, 0, 6), (-3, 0, 5), (-3, 0, 6), (-4, 0, 5)]))
+
+# 21. No false corrections in a normal run.
+lua, W, nav, scan = make()
+W.h = 0
+W.fuel = 20000
+for c in [(3, 0, 1), (3, 0, 2), (4, 0, 1), (-5, -2, 3), (-5, -2, 4), (2, -3, -6)]:
+    W.set(*c, "minecraft:iron_ore")
+nav.reset(0, 0, 0, 0)
+lua.execute("FIXES = 0")
+nav.mineArea(scan, 8, lua.table_from({"onFix": lua.eval("function() FIXES = FIXES + 1 end")}))
+check("no correction when nothing is wrong", lua.eval("FIXES") == 0 and (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0))
 
 # 10. ensureFuel burns coal from the inventory when fuel runs low.
 lua, W, nav, scan = make()
