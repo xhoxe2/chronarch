@@ -50,8 +50,11 @@ local function draw()
   input.restoreCursor()
 end
 
+-- Where you are. Above or below the plane of three GPS hosts the answer is
+-- ambiguous until the fourth one replies, so give it time and one more try.
 local function me()
-  local x, y, z = gps.locate(1)
+  local x, y, z = gps.locate(2)
+  if not x then x, y, z = gps.locate(3) end
   if not x then return nil end
   return { x = math.floor(x + 0.5), y = math.floor(y + 0.5), z = math.floor(z + 0.5) }
 end
@@ -71,7 +74,7 @@ local function act(a)
   last = a.to
   if a.cmd == "come" or a.cmd == "follow" or a.cmd == "dig" then
     local p = me()
-    if not p then say("no GPS here", colors.red); return end
+    if not p then say("no GPS fix: try gps locate", colors.red); return end
     if a.cmd == "dig" then
       if send(a.to, { cmd = "mineArea", radius = a.radius, wx = p.x, wy = p.y, wz = p.z }) then
         say(("%s: digging round %d,%d,%d"):format(a.to, p.x, p.y, p.z), colors.cyan)
