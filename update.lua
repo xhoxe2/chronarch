@@ -43,17 +43,22 @@ local TURTLE = {
   ["orescan.lua"]  = "common/orescan.lua",
   ["navigate.lua"] = "common/navigate.lua",
 }
+local POCKET = {
+  ["colony.lua"]     = "pocket/colony.lua",
+  ["statusview.lua"] = "common/statusview.lua",
+}
 local BASE = {
   ["startup.lua"]    = "base/base.lua",
   ["statusview.lua"] = "common/statusview.lua",
   ["oremap.lua"]     = "common/oremap.lua",
 }
 
--- Which files this computer needs, by role. Turtles have the global `turtle`.
-local function plan(isTurtle)
+-- Which files this computer needs, by role: turtles have the global
+-- `turtle`, pocket computers `pocket`, anything else is the base.
+local function plan(role)
   local files = {}
   for k, v in pairs(COMMON) do files[k] = v end
-  for k, v in pairs(isTurtle and TURTLE or BASE) do files[k] = v end
+  for k, v in pairs(role == "turtle" and TURTLE or role == "pocket" and POCKET or BASE) do files[k] = v end
   return files
 end
 
@@ -78,12 +83,12 @@ local function run()
     print("HTTP is off in the CC config; cannot update.")
     return
   end
-  local isTurtle = turtle ~= nil
+  local role = turtle and "turtle" or pocket and "pocket" or "base"
   local ref
   RAW, ref = latestRaw()
-  print(("CHRONARCH update (%s) <- %s/%s @ %s"):format(isTurtle and "turtle" or "base", USER, REPO, ref:sub(1, 7)))
+  print(("CHRONARCH update (%s) <- %s/%s @ %s"):format(role, USER, REPO, ref:sub(1, 7)))
 
-  local files = plan(isTurtle)
+  local files = plan(role)
   local names = {}
   for k in pairs(files) do names[#names + 1] = k end
   table.sort(names) -- stable, readable output order

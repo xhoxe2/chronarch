@@ -54,6 +54,26 @@ function M.format(turtles, now, staleAfter)
   return rows
 end
 
+-- Narrow screens (a pocket computer is 26 wide): three lines per turtle,
+--   name + fuel / state / position.
+function M.compact(turtles, now, staleAfter)
+  local rows, names = {}, {}
+  for name in pairs(turtles) do names[#names + 1] = name end
+  table.sort(names)
+  if #names == 0 then return { { text = "No turtles yet.", color = "orange" } } end
+  for _, name in ipairs(names) do
+    local t = turtles[name]
+    local state, color
+    if not t.seen or (now - t.seen) > staleAfter then state, color = "offline", "red"
+    elseif tostring(t.state):find("^SOS") then state, color = tostring(t.state), "red"
+    else state, color = t.state or "idle", (t.state == "idle") and "lime" or "yellow" end
+    rows[#rows + 1] = { text = ("%s  fuel %s"):format(name, tostring(t.fuel)), color = "white" }
+    rows[#rows + 1] = { text = " " .. state, color = color }
+    rows[#rows + 1] = { text = " " .. M.posText(t.pos), color = "lightGray" }
+  end
+  return rows
+end
+
 -- "638,63,-90" for world coords (GPS), "home+3,-2,5" for coords from home.
 function M.posText(p)
   if type(p) ~= "table" or not p.x then return "?" end

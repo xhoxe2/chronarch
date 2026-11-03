@@ -20,12 +20,13 @@ def check(name, cond, detail=""):
     results.append((name, bool(cond), detail))
 
 
-def run(is_turtle, sha=None):
+def run(is_turtle, sha=None, is_pocket=False):
     """Run update.lua as a turtle or a base; return (written {path: url}, all urls)."""
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute("WRITES = {}; URLS = {}")
     # turtle global decides the role; a plain table is enough
     lua.execute("turtle = %s" % ("{}" if is_turtle else "nil"))
+    lua.execute("pocket = %s" % ("{}" if is_pocket else "nil"))
     lua.execute("print = function() end")
     # http.get records the URL and hands back a fake body keyed to it
     lua.execute("""
@@ -86,6 +87,13 @@ check("turtle never fetches the base-only files",
 check("every URL points at the right public repo", all(u.startswith(RAW) for u in urls), urls)
 check("update.lua refreshes itself",
       writes.get("update.lua") == "-- body " + RAW + "update.lua", writes.get("update.lua"))
+
+# --- pocket computer role ---
+writes, urls = run(is_turtle=False, is_pocket=True)
+check("pocket writes exactly its file set",
+      set(writes) == {"colony.lua", "statusview.lua", "chronarch.lua", "update.lua"}, set(writes))
+check("pocket gets colony from pocket/colony.lua", writes.get("colony.lua") == "-- body " + RAW + "pocket/colony.lua")
+check("pocket never takes over startup", "startup.lua" not in writes)
 
 # --- pinned to the latest commit (dodges the raw CDN cache) ---
 SHA = "04809c82e023cd07b41385c09432b85df70f7aa8"

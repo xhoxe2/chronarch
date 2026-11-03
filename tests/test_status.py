@@ -60,6 +60,12 @@ check("SOS shown in red with its reason", rows[2].startswith("red|") and "SOS no
 check("world coords shown", "638,63,-90" in rows[2], rows[2])
 check("coords from home when no GPS", "home+3,-2,5" in rows[3], rows[3])
 
+# compact view for the pocket computer
+cmp_ = dump(view.compact(mk("{x = {id=1, fuel=50, state='SOS low fuel', seen=100, pos={x=1, y=2, z=3, abs=true}}}"), 100, 12)).split("\n")
+check("compact: 3 lines per turtle", len(cmp_) == 3, cmp_)
+check("compact: SOS red, position shown", cmp_[1].startswith("red|") and "SOS low fuel" in cmp_[1] and "1,2,3" in cmp_[2], cmp_)
+check("compact: fits a pocket screen (26)", all(len(r.split("|", 1)[1]) <= 26 for r in cmp_), cmp_)
+
 # summary for the AI
 summary = lambda t, m, now=100: view.summary(t, m, now, 12)
 check("summary: no turtles", "no turtles online" in summary(mk("{}"), mk("{}")))
