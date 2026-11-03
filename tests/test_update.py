@@ -20,7 +20,7 @@ def check(name, cond, detail=""):
     results.append((name, bool(cond), detail))
 
 
-def run(is_turtle, sha=None, is_pocket=False):
+def run(is_turtle, sha=None, is_pocket=False, args=(), saved=None):
     """Run update.lua as a turtle or a base; return (written {path: url}, all urls)."""
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute("WRITES = {}; URLS = {}")
@@ -42,14 +42,18 @@ def run(is_turtle, sha=None, is_pocket=False):
     lua.globals().SHA = sha
     # fs.open records what path got written and with which URL's body
     lua.execute("""
-      fs = { open = function(path, mode)
+      fs = { exists = function(path) return path == "/program" and SAVED ~= nil end,
+        open = function(path, mode)
+        if mode == "r" then return { readAll = function() return SAVED end, close = function() end } end
         return {
           write = function(d) WRITES[path] = d end,
           close = function() end,
         }
       end }
     """)
-    lua.execute(SRC)
+    lua.globals().SAVED = saved
+    lua.execute("print = function(s) OUT = (OUT or '') .. tostring(s) .. '\\n' end")
+    lua.eval("function(src, ...) return load(src, 'update.lua')(...) end")(SRC, *args)
     writes = dict(lua.eval("WRITES"))
     urls = [u for u in (lua.eval("URLS")[i] for i in range(1, lua.eval("#URLS") + 1)) if "api.github.com" not in u]
     return writes, urls
@@ -61,7 +65,7 @@ RAW = "https://raw.githubusercontent.com/xhoxe2/chronarch/main/"
 writes, urls = run(is_turtle=False)
 got = set(writes.keys())
 check("base writes exactly its file set",
-      got == {"startup.lua", "statusview.lua", "oremap.lua", "swarm.lua", "chronarch.lua", "update.lua"}, got)
+      got == {"startup.lua", "statusview.lua", "oremap.lua", "swarm.lua", "chronarch.lua", "update.lua", "program.lua"}, got)
 check("base startup.lua comes from base/base.lua",
       "-- body " + RAW + "base/base.lua" == writes.get("startup.lua"), writes.get("startup.lua"))
 check("base pulls oremap from common/oremap.lua",
@@ -75,7 +79,7 @@ check("base never touches the secret key",
 writes, urls = run(is_turtle=True)
 got = set(writes.keys())
 check("turtle writes exactly its file set",
-      got == {"startup.lua", "mine.lua", "orescan.lua", "navigate.lua", "chronarch.lua", "update.lua"}, got)
+      got == {"startup.lua", "mine.lua", "orescan.lua", "navigate.lua", "chronarch.lua", "update.lua", "program.lua"}, got)
 check("turtle startup.lua comes from turtle/agent.lua",
       writes.get("startup.lua") == "-- body " + RAW + "turtle/agent.lua", writes.get("startup.lua"))
 check("turtle pulls navigate from common/navigate.lua",
@@ -91,9 +95,21 @@ check("update.lua refreshes itself",
 # --- pocket computer role ---
 writes, urls = run(is_turtle=False, is_pocket=True)
 check("pocket writes exactly its file set",
-      set(writes) == {"colony.lua", "statusview.lua", "chronarch.lua", "update.lua"}, set(writes))
+      set(writes) == {"colony.lua", "statusview.lua", "chronarch.lua", "update.lua", "program.lua"}, set(writes))
 check("pocket gets colony from pocket/colony.lua", writes.get("colony.lua") == "-- body " + RAW + "pocket/colony.lua")
 check("pocket never takes over startup", "startup.lua" not in writes)
+
+# --- programs: `program <name>` / `update <name>` ---
+writes, urls = run(is_turtle=True, args=("mining",))
+check("update mining on a turtle saves the choice", writes.get("/program") == "mining", writes.get("/program"))
+check("...and installs the mining files and the program command",
+      "navigate.lua" in writes and "program.lua" in writes, set(writes))
+writes, urls = run(is_turtle=False, args=("mining",))
+check("mining refused on a plain computer", not writes, set(writes))
+writes, urls = run(is_turtle=True, args=("dancing",))
+check("unknown program: nothing written", not writes, set(writes))
+writes, urls = run(is_turtle=False, saved="colony", is_pocket=True)
+check("saved program is used next time", "colony.lua" in writes and "startup.lua" not in writes, set(writes))
 
 # --- pinned to the latest commit (dodges the raw CDN cache) ---
 SHA = "04809c82e023cd07b41385c09432b85df70f7aa8"

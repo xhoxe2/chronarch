@@ -1,10 +1,15 @@
 -- CHRONARCH :: update.lua
 -- Pulls the latest code from the public GitHub repo and writes it onto THIS
--- computer, picking the right set of files for its role (turtle or base).
--- The repo is public, so no token is needed. The secret /chronarch.key is
--- never fetched or touched.
+-- computer: the files of the PROGRAM it runs. Each machine runs one program:
+--   mining  - a mining turtle (harvest, scan, swarm...)
+--   base    - the base computer with the monitor
+--   colony  - a pocket computer that shows the colony
+-- The choice is kept in /program; without one it guesses (turtle -> mining,
+-- pocket computer -> colony, anything else -> base). The repo is public, so no
+-- token is needed. The secret /chronarch.key is never fetched or touched.
 --
---   update            update this computer, then reboot (hold Ctrl+R)
+--   update            update this computer's program, then reboot (Ctrl+R)
+--   update <program>  switch this computer to another program (or: program <name>)
 --
 -- First time on a fresh computer (bootstrap), get this one file, then it keeps
 -- itself up to date after that:
@@ -36,6 +41,7 @@ end
 local COMMON = {
   ["chronarch.lua"] = "common/chronarch.lua",
   ["update.lua"]    = "update.lua",
+  ["program.lua"]   = "program.lua",
 }
 local TURTLE = {
   ["startup.lua"]  = "turtle/agent.lua",
@@ -54,13 +60,27 @@ local BASE = {
   ["swarm.lua"]      = "common/swarm.lua",
 }
 
--- Which files this computer needs, by role: turtles have the global
--- `turtle`, pocket computers `pocket`, anything else is the base.
-local function plan(role)
+-- program -> its files and the kind of machine it needs
+local PROGRAMS = {
+  mining = { files = TURTLE, needs = "turtle", about = "mining turtle" },
+  base   = { files = BASE, about = "base computer + monitor" },
+  colony = { files = POCKET, needs = "pocket", about = "pocket view of the colony" },
+}
+local PROGRAM_FILE = "/program"
+
+local function plan(program)
   local files = {}
   for k, v in pairs(COMMON) do files[k] = v end
-  for k, v in pairs(role == "turtle" and TURTLE or role == "pocket" and POCKET or BASE) do files[k] = v end
+  for k, v in pairs(PROGRAMS[program].files) do files[k] = v end
   return files
+end
+
+local function savedProgram()
+  if not fs.exists(PROGRAM_FILE) then return nil end
+  local f = fs.open(PROGRAM_FILE, "r")
+  local p = (f.readAll() or ""):gsub("%s+", "")
+  f.close()
+  return PROGRAMS[p] and p or nil
 end
 
 -- Download one file and write it. Returns (true) or (false, reason). An empty
@@ -79,12 +99,27 @@ local function fetch(localPath, repoPath)
   return true
 end
 
-local function run()
+local function run(wanted)
   if not http then
     print("HTTP is off in the CC config; cannot update.")
     return
   end
-  local role = turtle and "turtle" or pocket and "pocket" or "base"
+  if wanted and not PROGRAMS[wanted] then
+    print("No program '" .. wanted .. "'. Programs:")
+    for name, p in pairs(PROGRAMS) do print(("  %-8s %s"):format(name, p.about)) end
+    return
+  end
+  local kind = turtle and "turtle" or pocket and "pocket" or "computer"
+  if wanted and PROGRAMS[wanted].needs and PROGRAMS[wanted].needs ~= kind then
+    print(("'%s' runs on a %s, this is a %s."):format(wanted, PROGRAMS[wanted].needs, kind))
+    return
+  end
+  local role = wanted or savedProgram() or (turtle and "mining" or pocket and "colony" or "base")
+  if wanted then
+    local f = fs.open(PROGRAM_FILE, "w")
+    f.write(wanted)
+    f.close()
+  end
   local ref
   RAW, ref = latestRaw()
   print(("CHRONARCH update (%s) <- %s/%s @ %s"):format(role, USER, REPO, ref:sub(1, 7)))
@@ -114,4 +149,4 @@ local function run()
   end
 end
 
-run()
+run(...)
