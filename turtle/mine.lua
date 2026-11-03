@@ -216,14 +216,23 @@ local function findChest()
   return false
 end
 
--- Empties everything into the chest except one stack of fuel.
+-- The turtle's own kit (the Geo Scanner it swaps in, a spare pickaxe) never
+-- goes into the chest.
+local function isKit(name)
+  return name == "advancedperipherals:geo_scanner" or name:find("pickaxe") ~= nil
+end
+
+-- Empties everything into the chest except one stack of fuel and the kit.
 local function unload()
   face(2)
   local keptFuel = false
   for s = 1, 16 do
-    if turtle.getItemCount(s) > 0 then
+    local item = turtle.getItemDetail(s)
+    if item then
       turtle.select(s)
-      if not keptFuel and turtle.refuel(0) then
+      if isKit(item.name) then
+        -- keep it
+      elseif not keptFuel and turtle.refuel(0) then
         keptFuel = true
       elseif not turtle.drop() then
         turtle.select(1)

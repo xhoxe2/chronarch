@@ -32,14 +32,14 @@ def signed(q, now_ms=None, secret=SECRET):
             "headers": {"X-TS": h["X-TS"], "X-Sig": h["X-Sig"]}}
 
 
-def run(requests, gemini=None):
-    data = {"env": ENV, "gemini": gemini or {"status": 200, "body": GEMINI_OK}, "requests": requests}
+def run(requests, gemini=None, env=None):
+    data = {"env": env or ENV, "gemini": gemini or {"status": 200, "body": GEMINI_OK}, "requests": requests}
     p = subprocess.run(["node", str(HERE / "bridge_harness.mjs")], input=json.dumps(data),
                        capture_output=True, text=True)
     if p.returncode != 0:
         print(p.stderr)
         sys.exit(1)
-    return json.loads(p.stdout)
+    return json.loads(p.stdout)["out"]
 
 
 results = []
@@ -76,6 +76,17 @@ check("rejected requests never reach Gemini", all(not x["geminiCalls"] for x in 
 
 q = run([signed("hi")], gemini={"status": 429, "body": {}})
 check("Gemini 429 -> 502 with a readable reason", q[0]["status"] == 502 and "limit" in q[0]["text"], q[0])
+
+# Quota guard: at the daily limit -> polite refusal, Gemini untouched.
+lim = run([signed("hi")], env={**ENV, "QUOTA_START": 5, "DAILY_LIMIT": "5"})
+check("daily limit reached -> 429, no Gemini call", lim[0]["status"] == 429 and "limit" in lim[0]["text"]
+      and not lim[0]["geminiCalls"], lim[0])
+data = {"env": {**ENV, "QUOTA_START": 0, "DAILY_LIMIT": "5"}, "gemini": {"status": 200, "body": GEMINI_OK},
+        "requests": [signed("hi"), signed("again")]}
+p = subprocess.run(["node", str(HERE / "bridge_harness.mjs")], input=json.dumps(data), capture_output=True, text=True)
+res = json.loads(p.stdout)
+check("under the limit: answers and counts each request",
+      [x["status"] for x in res["out"]] == [200, 200] and list(res["kv"].values()) == ["2"], res["kv"])
 
 failed = [x for x in results if not x[1]]
 for name, passed, detail in results:

@@ -5,5 +5,13 @@ compatibility_date = "2025-09-01"
 [vars]
 # Alias for the newest Flash-Lite model: fast, biggest free quota, rarely overloaded.
 MODEL = "gemini-flash-lite-latest"
+# Requests per day the bridge lets through; it refuses politely above this,
+# well before Google's free-tier limit blocks the key.
+DAILY_LIMIT = "200"
+
+# Daily request counter for the quota guard.
+[[kv_namespaces]]
+binding = "QUOTA"
+id = "ba21ef29f7a9453a91c3825d738c1513"
 
 # Secrets (never in this file): npx wrangler secret put GEMINI_KEY / CHRONARCH_KEY

@@ -51,7 +51,11 @@ local MON_COLORS = { white = colors.white, orange = colors.orange, magenta = col
 -- with `map <name>`. Each turtle's ore data accumulates in the background.
 local viewMode, mapTarget = "status", nil
 local maps = {} -- name -> { name=, ores=, total=, turtle= }
-local pending -- the AI's last suggested action, runs only after `yes`
+local plan = {}   -- the AI's suggested actions, run in order only after `yes`
+local running    -- the plan step in progress; the next starts when it reports back
+local lastAuto = {} -- name -> os.clock() of the last automatic problem report to the AI
+local commands = {}
+local runNext, autoAsk -- defined below, used by receiver()
 
 local function renderStatus()
   local rows = view.format(turtles, os.clock(), STALE)
@@ -119,6 +123,7 @@ local function receiver()
         if t then t.state, t.seen = "idle", os.clock() end
         out(("[%s] dig %s: %s"):format(msg.name, msg.ok and "done" or "FAILED", tostring(msg.text)),
           msg.ok and colors.lime or colors.orange)
+        if not msg.ok then autoAsk(msg.name, tostring(msg.text)) end
       elseif msg.type == "harvest" then
         -- accumulate the live map in the background; only redraw if it's on screen.
         -- two kinds of update: with an ore list (after a scan/vein) and
@@ -131,11 +136,18 @@ local function receiver()
         maps[msg.name] = m
       end
       render()
+      -- the running plan step finished -> start the next one (a failure ends the plan)
+      local finished = msg.type == "dig" or msg.type == "done" or msg.type == "scan"
+      if running and running.name == msg.name and finished then
+        if msg.ok then
+          runNext()
+        else
+          plan, running = {}, nil
+        end
+      end
     end
   end
 end
-
-local commands = {}
 
 function commands.help()
   out("list                       who is online", colors.yellow)
@@ -248,27 +260,52 @@ function commands.status()
 end
 
 -- The answer comes back later as an http_success/http_failure event (asker).
+-- The AI also gets the live colony status, so it answers about this colony.
+local function askAI(q)
+  q = (q:gsub("[\128-\255]", "?"))
+  local body = q .. "\n\n" .. view.summary(turtles, maps, os.clock(), STALE)
+  http.request({ url = BRIDGE_URL, method = "POST", body = body,
+    headers = proto.signRequest(secret, body, os.epoch("utc")) })
+end
+
 function commands.ask(...)
-  local q = (table.concat({ ... }, " "):gsub("[\128-\255]", "?"))
+  local q = table.concat({ ... }, " ")
   if q == "" then
     out("Usage: ask <question>", colors.orange)
     return
   end
-  -- the AI also gets the live colony status, so it answers about this colony
-  local body = q .. "\n\n" .. view.summary(turtles, maps, os.clock(), STALE)
-  http.request({ url = BRIDGE_URL, method = "POST", body = body,
-    headers = proto.signRequest(secret, body, os.epoch("utc")) })
+  askAI(q)
   out("-> AI: " .. q, colors.cyan)
 end
 
+-- Run the next step of the AI's plan. A step counts as done when its turtle
+-- reports back (see receiver); `stop` to an idle turtle is done at once.
+function runNext()
+  running = table.remove(plan, 1)
+  if not running then return end
+  local a = running
+  commands[a.cmd](a.name, a.n, a.ore)
+  if a.cmd == "stop" and (not turtles[a.name] or turtles[a.name].state == "idle") then
+    runNext()
+  end
+end
+
 function commands.yes()
-  if not pending then
+  if #plan == 0 then
     out("The AI has not suggested anything.", colors.orange)
     return
   end
-  local a = pending
-  pending = nil
-  commands[a.cmd](a.name, a.n, a.ore)
+  runNext()
+end
+
+-- A turtle reported a problem: ask the AI what to do, at most once a minute
+-- per turtle, so a repeating failure cannot burn the free quota.
+function autoAsk(name, text)
+  local now = os.clock()
+  if lastAuto[name] and now - lastAuto[name] < 60 then return end
+  lastAuto[name] = now
+  askAI(("Turtle %s reported a problem: %s. What should I do?"):format(name, text))
+  out("-> AI (auto): what to do about " .. name .. "?", colors.lightGray)
 end
 
 function commands.clear()
@@ -331,10 +368,13 @@ local function asker()
       local text = res and res.readAll() or tostring(a)
       if res then res.close() end
       if ev == "http_success" then
-        local answer, act = view.parseAction(text, turtles)
+        local answer, acts = view.parseActions(text, turtles)
         out("AI: " .. answer, colors.lime)
-        pending = act
-        if act then out("AI suggests: " .. act.line .. "   (type yes to run)", colors.yellow) end
+        if #acts > 0 then
+          plan, running = acts, nil
+          for i, a in ipairs(acts) do out(("AI plan %d: %s"):format(i, a.line), colors.yellow) end
+          out("(type yes to run)", colors.yellow)
+        end
       else
         out("AI: " .. text, colors.red)
       end

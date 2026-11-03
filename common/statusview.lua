@@ -89,25 +89,34 @@ function M.summary(turtles, maps, now, staleAfter)
   return table.concat(lines, "\n")
 end
 
--- The AI may end its answer with one line "DO: <command>" (see SYSTEM in
--- bridge/worker.js). Returns the answer without that line, plus the action if
--- it is one we allow, for a turtle we know, with numbers clamped to safe
--- limits. The base still asks the player to confirm with `yes`.
+-- The AI may end its answer with up to 3 lines "DO: <command>" (see SYSTEM in
+-- bridge/worker.js), a plan run in order. Returns the answer without those
+-- lines, plus the actions we allow: for a turtle we know, with numbers clamped
+-- to safe limits. The base still asks the player to confirm with `yes`.
 local ALLOWED = { scan = { 1, 16, 8 }, harvest = { 1, 24, 12 }, mine = { 1, 64, 16 }, stop = false }
 
-function M.parseAction(text, turtles)
-  local answer = text:gsub("\n?DO:[^\n]*", "")
-  local cmd, name, n, ore = text:match("DO:%s*(%a+)%s+([%w_%-]+)%s*(%d*)%s*([%w_]*)")
+local function parseOne(line, turtles)
+  local cmd, name, n, ore = line:match("DO:%s*(%a+)%s+([%w_%-]+)%s*(%d*)%s*([%w_]*)")
   local rule = ALLOWED[cmd]
-  if rule == nil or not turtles[name] then return answer, nil end
+  if rule == nil or not turtles[name] then return nil end
   if rule then
     n = math.max(rule[1], math.min(rule[2], tonumber(n) or rule[3]))
   else
     n = nil
   end
   if cmd ~= "harvest" or ore == "" then ore = nil end
-  return answer, { cmd = cmd, name = name, n = n, ore = ore,
+  return { cmd = cmd, name = name, n = n, ore = ore,
     line = cmd .. " " .. name .. (n and (" " .. n) or "") .. (ore and (" " .. ore) or "") }
+end
+
+function M.parseActions(text, turtles)
+  local answer = text:gsub("\n?DO:[^\n]*", "")
+  local acts = {}
+  for line in text:gmatch("DO:[^\n]*") do
+    acts[#acts + 1] = parseOne(line, turtles)
+    if #acts == 3 then break end
+  end
+  return answer, acts
 end
 
 return M

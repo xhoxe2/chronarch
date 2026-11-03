@@ -22,11 +22,15 @@ const SYSTEM =
   "(CC: Tweaked, All the Mods 10 modpack). Answer in English, plain text, " +
   "no markdown, at most 3 short sentences. The message may end with a live " +
   "colony status (turtles, fuel, ore they found): base your advice on it. " +
-  "If the player asks you to act, or one action clearly helps, end with ONE extra " +
-  "line 'DO: <command>' using exactly one of: scan <turtle> <radius 1-16> | " +
+  "If the player asks you to act, or an action clearly helps, end with up to 3 extra " +
+  "lines 'DO: <command>', run in order, each after the previous one finishes, using " +
+  "only: scan <turtle> <radius 1-16> | " +
   "harvest <turtle> <radius 1-24> [ore word, e.g. diamond, to mine only that] | " +
   "mine <turtle> <length 1-64> | stop <turtle>. " +
-  "The player confirms it before it runs. Otherwise write no DO line.";
+  "harvest scans by itself while it works, so add a separate scan only if the " +
+  "player asks for one. The player confirms the plan before it runs. Otherwise " +
+  "write no DO line. If the message is a turtle problem report, say the likely " +
+  "cause in one sentence and suggest a fix.";
 
 const enc = new TextEncoder();
 
@@ -77,6 +81,16 @@ export default {
     }
     if (!(Math.abs(Date.now() - Number(ts)) <= MAX_AGE_MS)) {
       return reply("request too old", 401);
+    }
+
+    // Quota guard: refuse politely before Google blocks the free key.
+    // ponytail: KV is eventually consistent, so the count can be off by a few.
+    if (env.QUOTA) {
+      const limit = Number(env.DAILY_LIMIT) || 200;
+      const key = "count:" + new Date().toISOString().slice(0, 10);
+      const used = Number(await env.QUOTA.get(key)) || 0;
+      if (used >= limit) return reply(`AI daily limit reached (${limit}), back tomorrow`, 429);
+      await env.QUOTA.put(key, String(used + 1), { expirationTtl: 172800 });
     }
 
     const r = await fetch(

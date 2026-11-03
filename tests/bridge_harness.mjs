@@ -6,6 +6,12 @@ import worker from "../bridge/worker.js";
 let input = "";
 for await (const chunk of process.stdin) input += chunk;
 const { env, gemini, requests } = JSON.parse(input);
+// In-memory stand-in for the QUOTA KV namespace, if the test asks for one.
+const kv = {};
+if (env.QUOTA_START !== undefined) {
+  kv["count:" + new Date().toISOString().slice(0, 10)] = String(env.QUOTA_START);
+  env.QUOTA = { get: async (k) => kv[k] ?? null, put: async (k, v) => { kv[k] = v; } };
+}
 
 const out = [];
 for (const r of requests) {
@@ -22,4 +28,4 @@ for (const r of requests) {
   const res = await worker.fetch(req, env);
   out.push({ status: res.status, text: await res.text(), geminiCalls: calls });
 }
-console.log(JSON.stringify(out));
+console.log(JSON.stringify({ out, kv }));

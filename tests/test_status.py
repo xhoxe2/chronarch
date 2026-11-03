@@ -70,8 +70,8 @@ check("summary: ore counts, most first, mod prefix dropped",
 # AI action line
 known = mk("{xhoxi = {id=0}}")
 def act(text):
-    ans, a = view.parseAction(text, known)
-    return ans, (a.line if a else None)
+    ans, acts = view.parseActions(text, known)
+    return ans, (acts[1].line if len(acts) else None)
 check("action: harvest parsed, line removed",
       act("Diamonds nearby.\nDO: harvest xhoxi 12") == ("Diamonds nearby.", "harvest xhoxi 12"))
 check("action: radius clamped", act("Go.\nDO: scan xhoxi 99")[1] == "scan xhoxi 16")
@@ -80,6 +80,11 @@ check("action: stop has no number", act("Halt.\nDO: stop xhoxi")[1] == "stop xho
 check("action: unknown command ignored", act("x\nDO: dig xhoxi 5")[1] is None)
 check("action: unknown turtle ignored", act("x\nDO: harvest ghost 5")[1] is None)
 check("action: no DO line", act("Just advice.") == ("Just advice.", None))
+_, plan = view.parseActions("Ok.\nDO: scan xhoxi 8\nDO: harvest xhoxi 12 diamond\nDO: stop ghost\n"
+                              "DO: stop xhoxi\nDO: scan xhoxi 4\nDO: scan xhoxi 5", known)
+check("plan: actions in order, unknown dropped, at most 3",
+      [plan[i].line for i in range(1, len(plan) + 1)] == ["scan xhoxi 8", "harvest xhoxi 12 diamond", "stop xhoxi"],
+      [plan[i].line for i in range(1, len(plan) + 1)])
 check("action: harvest with an ore filter", act("Go.\nDO: harvest xhoxi 12 diamond")[1] == "harvest xhoxi 12 diamond")
 check("action: ore word only for harvest", act("Go.\nDO: scan xhoxi 8 diamond")[1] == "scan xhoxi 8")
 

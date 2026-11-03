@@ -188,7 +188,7 @@ local function doMineArea(j)
   local mined, reason = nav.mineArea(scanOnce, radius, opts)
   local dropped = nav.deposit()
   proto.send(secret, j.from, { type = "harvest", name = name, pos = { x = 0, y = 0, z = 0 }, ores = {}, done = true })
-  proto.send(secret, j.from, { type = "dig", name = name, ok = true,
+  proto.send(secret, j.from, { type = "dig", name = name, ok = reason == "area clear" or reason == "stopped",
     text = ("harvest r%d%s: %d ores (%s), %s"):format(radius, j.ore and (" " .. j.ore) or "", mined,
       tostring(reason), dropped and "unloaded" or "no chest"),
     fuel = turtle.getFuelLevel() })

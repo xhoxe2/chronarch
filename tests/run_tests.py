@@ -171,6 +171,18 @@ inv = [W.inv[i] for i in range(1, 17)]
 check("fuel slot: works from any slot, keeps fuel", ok and "minecraft:coal" not in chest(W)
       and any(s and s.name == "minecraft:coal" for s in inv), (err, chest(W)))
 
+# 13. The Geo Scanner and a spare pickaxe never go into the chest
+lua, W = make()
+setup_inv(lua, W, {1: ("minecraft:coal", 10), 2: ("advancedperipherals:geo_scanner", 1),
+                   3: ("minecraft:diamond_pickaxe", 1)})
+W.set(3, 0, 1, "minecraft:iron_ore")
+ok, err, out = run(lua, W, 8)
+check("kit: run ok", ok, err)
+check("kit: scanner stays in the turtle", "advancedperipherals:geo_scanner" not in chest(W)
+      and any(W.inv[i] and W.inv[i].name == "advancedperipherals:geo_scanner" for i in range(1, 17)), chest(W))
+check("kit: pickaxe stays in the turtle", "minecraft:diamond_pickaxe" not in chest(W), chest(W))
+check("kit: ore still unloaded", chest(W).get("minecraft:raw_iron", 0) >= 1, chest(W))
+
 width = max(len(n) for n, _, _ in results)
 for n, good, d in results:
     print(("PASS " if good else "FAIL ") + n.ljust(width) + ("" if good else f"  -> {d}"))
