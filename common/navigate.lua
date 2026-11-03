@@ -21,9 +21,29 @@ local DZ = { [0] = 0, [1] = 1, [2] = 0, [3] = -1 }
 
 local state = { x = 0, y = 0, z = 0, h = 0 }
 
+-- World memory from the scans: "x,y,z" -> block name, false = air, "!" = a
+-- cell we failed to get through. Missing = never seen (planned as stone).
+local world = {}
+local function wkey(x, y, z) return x .. "," .. y .. "," .. z end
+
 function M.reset(x, y, z, h)
   state = { x = x or 0, y = y or 0, z = z or 0, h = h or 0 }
   M.chestH = nil
+  world = {}
+end
+
+-- Remember a scan made at (ox,oy,oz) with radius r: every cell in its cube is
+-- air unless the scan listed a block there.
+function M.remember(blocks, ox, oy, oz, r)
+  if type(blocks) ~= "table" then return end
+  for x = ox - r, ox + r do
+    for y = oy - r, oy + r do
+      for z = oz - r, oz + r do world[wkey(x, y, z)] = false end
+    end
+  end
+  for _, b in ipairs(blocks) do
+    if b.name then world[wkey(ox + b.x, oy + b.y, oz + b.z)] = b.name end
+  end
 end
 
 function M.pos() return state.x, state.y, state.z, state.h end
@@ -55,6 +75,7 @@ local function shouldAbort() return (not homing) and stopFn ~= nil and stopFn() 
 local stepReport = nil -- called after every block moved, for a smooth live map
 local stepHook = nil   -- mineArea's per-step work: scan on the go, drop junk
 local function moved()
+  world[wkey(state.x, state.y, state.z)] = false -- we stand here: it is open now
   if stepReport then stepReport() end
   if stepHook and not homing then stepHook() end
 end
@@ -103,13 +124,13 @@ local function turnTo(h)
   end
 end
 
--- Move to (tx,ty,tz) along a shortest path (any path along the axes is as
--- short as the Manhattan distance; digging makes every cell passable). Height
+-- Fallback move to (tx,ty,tz) without a map: any path along the axes is as
+-- short as the Manhattan distance, and digging makes every cell passable. Height
 -- first (needs no turning), then the axis we already face, so it turns at most
 -- once. A protected block in the way (chest, computer) is walked around: the
 -- other axis order first, then over the top. stopWhen() is checked before
 -- every step: return true to end early (e.g. the target was dug from next door).
-function M.travel(tx, ty, tz, stopWhen)
+local function axisTravel(tx, ty, tz, stopWhen)
   local function enough() return stopWhen ~= nil and stopWhen() end
   local function vertical(target)
     while state.y ~= target do
@@ -151,6 +172,131 @@ function M.travel(tx, ty, tz, stopWhen)
     if ok2 then return vertical(ty) end
   end
   return false, e
+end
+
+-- Path planning --------------------------------------------------------------
+-- Cost is time, in turtle actions: a step = 1, digging the cell first = +1, a
+-- quarter turn = 1. So walking round through air beats digging only when it is
+-- really quicker, and the trip home runs back through our own tunnels.
+local function extra(x, y, z)
+  local b = world[wkey(x, y, z)]
+  if b == false then return 0 end
+  if b == nil then return 1 end -- never seen: plan as stone
+  if b == "!" or isProtected(b) then return nil end -- impassable
+  if b:find("water") or b:find("lava") then return 0 end -- a turtle swims
+  return 1
+end
+
+-- Binary min-heap keyed on f.
+local function push(heap, node)
+  heap[#heap + 1] = node
+  local i = #heap
+  while i > 1 do
+    local p = math.floor(i / 2)
+    if heap[p].f <= heap[i].f then break end
+    heap[p], heap[i] = heap[i], heap[p]; i = p
+  end
+end
+local function pop(heap)
+  local top, last = heap[1], heap[#heap]
+  heap[#heap] = nil
+  if #heap > 0 then
+    heap[1] = last
+    local i = 1
+    while true do
+      local l, r, m = 2 * i, 2 * i + 1, i
+      if heap[l] and heap[l].f < heap[m].f then m = l end
+      if heap[r] and heap[r].f < heap[m].f then m = r end
+      if m == i then break end
+      heap[m], heap[i] = heap[i], heap[m]; i = m
+    end
+  end
+  return top
+end
+
+-- A* from where we are to (tx,ty,tz), inside the box around both ends plus a
+-- margin. Returns a list of moves ("u", "d" or a heading 0-3), or nil if no
+-- path within maxNodes (then the caller digs straight, as before).
+-- ponytail: weighted heuristic (x1.5) trades a few % of optimality for speed;
+-- past maxNodes (long trips through solid rock) it digs straight instead.
+function M.plan(tx, ty, tz, maxNodes)
+  maxNodes = maxNodes or 6000
+  local PAD = 4
+  local lox, hix = math.min(state.x, tx) - PAD, math.max(state.x, tx) + PAD
+  local loy, hiy = math.min(state.y, ty) - PAD, math.max(state.y, ty) + PAD
+  local loz, hiz = math.min(state.z, tz) - PAD, math.max(state.z, tz) + PAD
+  local function h(x, y, z) return 1.5 * (math.abs(tx - x) + math.abs(ty - y) + math.abs(tz - z)) end
+
+  local heap, best, came = {}, {}, {}
+  local startKey = wkey(state.x, state.y, state.z) .. "," .. state.h
+  best[startKey] = 0
+  push(heap, { f = h(state.x, state.y, state.z), g = 0, x = state.x, y = state.y, z = state.z, h = state.h, k = startKey })
+  local n = 0
+  while #heap > 0 do
+    local cur = pop(heap)
+    if cur.x == tx and cur.y == ty and cur.z == tz then
+      local moves, k = {}, cur.k
+      while came[k] do table.insert(moves, 1, came[k].move); k = came[k].from end
+      return moves
+    end
+    if cur.g <= best[cur.k] then
+      n = n + 1
+      if n > maxNodes then return nil end
+      if n % 2000 == 0 and os.queueEvent then -- CC kills code that never yields
+        os.queueEvent("nav_yield"); os.pullEvent("nav_yield")
+      end
+      local function try(nx, ny, nz, nh, move, turns)
+        if nx < lox or nx > hix or ny < loy or ny > hiy or nz < loz or nz > hiz then return end
+        local e = extra(nx, ny, nz)
+        if not e then return end
+        local g = cur.g + turns + 1 + e
+        local k = wkey(nx, ny, nz) .. "," .. nh
+        if best[k] == nil or g < best[k] then
+          best[k] = g
+          came[k] = { from = cur.k, move = move }
+          push(heap, { f = g + h(nx, ny, nz), g = g, x = nx, y = ny, z = nz, h = nh, k = k })
+        end
+      end
+      try(cur.x, cur.y + 1, cur.z, cur.h, "u", 0)
+      try(cur.x, cur.y - 1, cur.z, cur.h, "d", 0)
+      for d = 0, 3 do
+        local t = (d - cur.h) % 4
+        try(cur.x + DX[d], cur.y, cur.z + DZ[d], d, d, t == 3 and 1 or t)
+      end
+    end
+  end
+  return nil
+end
+
+-- Move to (tx,ty,tz) the quickest way the map knows: through air, our own
+-- tunnels and caves when that beats digging, digging when it does not. If
+-- something the map did not know blocks a step, mark it and plan again; with
+-- no map or no plan, dig straight along the axes. stopWhen() is checked before
+-- every step: return true to end early (e.g. the target was dug from next door).
+function M.travel(tx, ty, tz, stopWhen)
+  if next(world) ~= nil then
+    for _ = 1, 3 do
+      local moves = M.plan(tx, ty, tz)
+      if not moves then break end
+      local ok, e, bx, by, bz = true, nil, nil, nil, nil
+      for _, m in ipairs(moves) do
+        if stopWhen and stopWhen() then return true end
+        if m == "u" then
+          bx, by, bz = state.x, state.y + 1, state.z; ok, e = stepUp()
+        elseif m == "d" then
+          bx, by, bz = state.x, state.y - 1, state.z; ok, e = stepDown()
+        else
+          turnTo(m)
+          bx, by, bz = state.x + DX[m], state.y, state.z + DZ[m]; ok, e = stepForward()
+        end
+        if not ok then break end
+      end
+      if ok then return true end
+      if e == "stopped" then return false, e end
+      world[wkey(bx, by, bz)] = "!" -- the map was wrong here; route round it
+    end
+  end
+  return axisTravel(tx, ty, tz, stopWhen)
 end
 
 -- Vein mining: from the ore cell the turtle just dug into, flood-fill every
@@ -304,7 +450,7 @@ function M.mineArea(scanFn, areaRadius, opts)
       local k = (state.x + dx) .. "," .. (state.y + dy) .. "," .. (state.z + dz)
       if found[k] and not done[k] then
         done[k], found[k] = true, nil
-        if dig() then mined = mined + 1 end
+        if dig() then mined = mined + 1; world[k] = false end
       end
     end
     try(0, 1, 0, turtle.digUp)
@@ -346,6 +492,7 @@ function M.mineArea(scanFn, areaRadius, opts)
     local blocks = scanFn(AREA_SCAN_R, quick)
     if type(blocks) ~= "table" then return false end
     correct(blocks)
+    M.remember(blocks, state.x, state.y, state.z, AREA_SCAN_R)
     sinceScan = 0
     scans[#scans + 1] = { x = state.x, y = state.y, z = state.z }
     local seen = {}

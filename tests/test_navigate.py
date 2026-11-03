@@ -387,6 +387,73 @@ check("harvest does not go searching deep", lua.eval("DEEPEST") >= -2 and W.get(
       lua.eval("DEEPEST"))
 check("harvest ends home", (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0))
 
+# 23. Path planning: an open corridor beats digging straight through stone.
+def cobble(W):
+    return sum(W.inv[i].count for i in range(1, 17) if W.inv[i] and W.inv[i].name == "minecraft:cobblestone")
+
+lua, W, nav, scan = make()
+W.scanAll = True
+W.fuel = 20000
+W.h = 0
+for x in range(0, 9):
+    W.set(x, 0, 1, "air")  # a corridor one block to the side
+W.set(8, 0, 0, "minecraft:iron_ore")
+nav.reset(0, 0, 0, 0)
+nav.remember(scan(8), 0, 0, 0, 8)
+nav.travel(8, 0, 0)
+check("planner reaches the ore", (W.pos.x, W.pos.y, W.pos.z) == (8, 0, 0), (W.pos.x, W.pos.z))
+check("planner walks the corridor instead of digging", cobble(W) == 0, cobble(W))
+
+# 24. Solid rock and no way round: it digs straight, as before.
+lua, W, nav, scan = make()
+W.scanAll = True
+W.fuel = 20000
+W.h = 0
+nav.reset(0, 0, 0, 0)
+nav.remember(scan(8), 0, 0, 0, 8)
+nav.travel(5, 0, 0)
+check("solid rock: digs the straight line", (W.pos.x, W.pos.z) == (5, 0) and cobble(W) == 5, (W.pos.x, cobble(W)))
+
+# 25. The way home runs back through our own tunnel: nothing new dug.
+lua, W, nav, scan = make()
+W.scanAll = True
+W.fuel = 20000
+W.h = 0
+nav.reset(0, 0, 0, 0)
+nav.remember(scan(8), 0, 0, 0, 8)
+nav.travel(5, -2, 4)
+dug_out = cobble(W)
+nav.travel(0, 0, 0)
+# (one new block may be dug if that saves two turns: same time, by the cost model)
+check("home mostly through our own tunnel", cobble(W) - dug_out <= 1 and (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0),
+      (dug_out, cobble(W), W.pos.x, W.pos.y, W.pos.z))
+
+# 26. A computer the map knows about is routed round, never tried.
+lua, W, nav, scan = make()
+W.scanAll = True
+W.fuel = 20000
+W.h = 0
+W.set(2, 0, 0, "computercraft:computer_advanced")
+nav.reset(0, 0, 0, 0)
+nav.remember(scan(8), 0, 0, 0, 8)
+ok = first(nav.travel(4, 0, 0))
+check("known computer: routed round, intact", ok and (W.pos.x, W.pos.z) == (4, 0)
+      and W.get(2, 0, 0) == "computercraft:computer_advanced", (ok, W.pos.x, W.pos.z))
+
+# 27. The map is wrong (a computer appeared where it saw air): mark, re-plan, arrive.
+lua, W, nav, scan = make()
+W.scanAll = True
+W.fuel = 20000
+W.h = 0
+for x in range(0, 7):
+    W.set(x, 0, 0, "air")
+nav.reset(0, 0, 0, 0)
+nav.remember(scan(8), 0, 0, 0, 8)
+W.set(3, 0, 0, "computercraft:computer_advanced")  # placed after the scan
+ok = first(nav.travel(6, 0, 0))
+check("stale map: re-plans round the surprise", ok and (W.pos.x, W.pos.z) == (6, 0)
+      and W.get(3, 0, 0) == "computercraft:computer_advanced", (ok, W.pos.x, W.pos.z))
+
 # 10. ensureFuel burns coal from the inventory when fuel runs low.
 lua, W, nav, scan = make()
 W.fuel = 5
