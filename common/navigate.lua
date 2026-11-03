@@ -379,9 +379,10 @@ end
 --     eaten cell by cell with no spinning to look around;
 --   * scan on the go every few steps (no waiting on the scanner's cooldown), so
 --     new ore shows up while it walks;
---   * when no known ore is left: stop and go home, unless opts.explore is set;
---     then walk to the nearest part of the area no scan has covered yet and
---     scan there (that walk can go deep and far, so only on request);
+--   * when no known ore is left, walk to the nearest part of the area no scan
+--     has covered yet (shallow and close first) and scan there. A plain
+--     harvest stops searching once it has mined something; opts.explore keeps
+--     going until the whole area is swept;
 --   * throw junk away on the go, drive home only to unload real loot.
 -- Needs the heading already calibrated. scanFn(r, quick) returns the raw scan
 -- (quick = one try, no cooldown wait). Ends back at the start.
@@ -418,6 +419,7 @@ function M.mineArea(scanFn, areaRadius, opts)
     ys = (areaRadius <= AREA_SCAN_R) and { 0 } or axis(-areaRadius, 0) -- ore is below home
   end
   local points = {}
+  if areaRadius <= AREA_SCAN_R then ys = {} end -- one scan already sees it all
   for _, yy in ipairs(ys) do
     for _, zz in ipairs(zs) do
       for _, xx in ipairs(xs) do points[#points + 1] = { x = xx, y = yy, z = zz } end
@@ -577,7 +579,8 @@ function M.mineArea(scanFn, areaRadius, opts)
           if not nd or d < nd then next, nd = p, d end
         end
       end
-      if not next or not opts.explore then break end -- done: all known ore mined
+      -- done: area swept, or (plain harvest) we found and mined what we came for
+      if not next or (mined > 0 and not opts.explore) then break end
       if not afford(nd + homeDist(next) + fuelBuffer) then reason = "low fuel"; break end
       next.done = true -- even if the way is blocked, don't try forever
       M.travel(next.x, next.y, next.z)

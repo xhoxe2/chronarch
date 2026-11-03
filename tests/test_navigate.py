@@ -454,6 +454,28 @@ ok = first(nav.travel(6, 0, 0))
 check("stale map: re-plans round the surprise", ok and (W.pos.x, W.pos.z) == (6, 0)
       and W.get(3, 0, 0) == "computercraft:computer_advanced", (ok, W.pos.x, W.pos.z))
 
+# 28. Nothing in sight from home: harvest goes looking within its radius,
+#     mines what it finds, then comes home (no sweeping the rest).
+lua, W, nav, scan = make()
+W.h = 0
+W.fuel = 40000
+W.default = lua.eval("function(x, y, z) if y <= -40 then return 'minecraft:bedrock' end return 'minecraft:stone' end")
+W.set(18, -3, 4, "minecraft:diamond_ore")   # far out of the home scan's reach
+W.set(-20, -25, -20, "minecraft:diamond_ore")  # in the area, but far and deep
+nav.reset(0, 0, 0, 0)
+mined, reason = nav.mineArea(scan, 24, lua.table_from({"only": "diamond"}))
+check("search: finds and mines ore out of sight", W.get(18, -3, 4) is None and mined >= 1, (mined, reason))
+check("search: stops once it has its ore", W.get(-20, -25, -20) == "minecraft:diamond_ore")
+check("search: ends home", (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0), (W.pos.x, W.pos.y, W.pos.z))
+
+# 29. Small radius, nothing there: one scan covers it, no wandering.
+lua, W, nav, scan = make()
+W.h = 0
+W.fuel = 2000
+nav.reset(0, 0, 0, 0)
+mined, reason = nav.mineArea(scan, 8)
+check("small radius, nothing: no walking at all", W.moves == 0 and mined == 0, (W.moves, mined))
+
 # 10. ensureFuel burns coal from the inventory when fuel runs low.
 lua, W, nav, scan = make()
 W.fuel = 5

@@ -153,8 +153,8 @@ function commands.help()
   out("list                       who is online", colors.yellow)
   out("mine <name> <len> [depth]  send a turtle mining", colors.yellow)
   out("scan <name> [radius]       find ores around a turtle", colors.yellow)
-  out("harvest <name> [r] [ore]   mine the ore it sees (ore: e.g. diamond)", colors.yellow)
-  out("explore <name> [r] [ore]   search the whole area too (deep, far)", colors.yellow)
+  out("harvest <name> [r] [ore]   find ore within r, mine it, come home", colors.yellow)
+  out("explore <name> [r] [ore]   sweep the WHOLE area, mine everything", colors.yellow)
   out("stop <name>                recall a turtle (stop, come home)", colors.yellow)
   out("map <name> | status        show a turtle's ore map / the list", colors.yellow)
   out("(tap an ore on the map -> harvest that cluster)", colors.lightGray)
@@ -229,8 +229,8 @@ local function areaJob(cmd, name, radius, ore)
     ore and (" only " .. ore) or "", name), colors.cyan)
 end
 
--- harvest: ore it can see from home (and spots on the way), then home.
--- explore: also walks the whole area, deep and far, to find more.
+-- harvest: search within the radius until it finds ore, mine it, come home.
+-- explore: sweep the whole area, deep and far, and mine everything.
 function commands.harvest(...) areaJob("harvest", ...) end
 function commands.explore(...) areaJob("explore", ...) end
 
