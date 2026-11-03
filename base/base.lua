@@ -57,6 +57,16 @@ local lastAuto = {} -- name -> os.clock() of the last automatic problem report t
 local commands = {}
 local runNext, autoAsk -- defined below, used by receiver()
 
+-- Ore worth set by the player or the AI (`value <ore> <n>`), sent with every
+-- harvest so the turtle mines the most valuable ore first. Kept in a file.
+local VALUES_FILE = "/values"
+local values = {}
+if fs.exists(VALUES_FILE) then
+  local f = fs.open(VALUES_FILE, "r")
+  values = textutils.unserialize(f.readAll()) or {}
+  f.close()
+end
+
 local function renderStatus()
   local rows = view.format(turtles, os.clock(), STALE)
   for i, row in ipairs(rows) do
@@ -156,6 +166,8 @@ function commands.help()
   out("harvest <name> [r] [ore]   find ore within r, mine it, come home", colors.yellow)
   out("explore <name> [r] [ore]   sweep the WHOLE area, mine everything", colors.yellow)
   out("sety <name> <y>            turtle's home height (F3) -> digs to ore depth", colors.yellow)
+  out("value <ore> <n>            how much an ore is worth (most valuable first)", colors.yellow)
+  out("forget <name>              clear a turtle's map memory", colors.yellow)
   out("stop <name>                recall a turtle (stop, come home)", colors.yellow)
   out("map <name> | status        show a turtle's ore map / the list", colors.yellow)
   out("(tap an ore on the map -> harvest that cluster)", colors.lightGray)
@@ -224,7 +236,7 @@ local function areaJob(cmd, name, radius, ore)
     return
   end
   radius = tonumber(radius) or 12
-  proto.send(secret, id, { cmd = "mineArea", radius = radius, ore = ore, explore = cmd == "explore" })
+  proto.send(secret, id, { cmd = "mineArea", radius = radius, ore = ore, explore = cmd == "explore", values = values })
   if turtles[name] then turtles[name].state = "digging" end
   out(("-> %s: %s r%d%s   (watch live: map %s)"):format(name, cmd, radius,
     ore and (" only " .. ore) or "", name), colors.cyan)
@@ -240,6 +252,28 @@ function commands.sety(name, y)
   end
   proto.send(secret, id, { cmd = "sety", y = tonumber(y) })
   out(("-> %s: home height y=%d"):format(name, tonumber(y)), colors.cyan)
+end
+
+function commands.value(ore, n)
+  if not ore then
+    for k, v in pairs(values) do out(("%-16s %d"):format(k, v)) end
+    out("Usage: value <ore> <n>  (n=0 removes; defaults: coal 1 ... diamond 10)", colors.orange)
+    return
+  end
+  values[ore] = (tonumber(n) and tonumber(n) > 0) and tonumber(n) or nil
+  local f = fs.open(VALUES_FILE, "w")
+  f.write(textutils.serialize(values))
+  f.close()
+  out(("Ore value: %s = %s"):format(ore, tostring(values[ore] or "default")), colors.cyan)
+end
+
+function commands.forget(name)
+  local id = name and (turtles[name] and turtles[name].id or rednet.lookup(PROTOCOL, name))
+  if not id then
+    out("Usage: forget <name>   (clear what it remembers, e.g. after moving its home)", colors.orange)
+    return
+  end
+  proto.send(secret, id, { cmd = "forget" })
 end
 
 -- harvest: search within the radius until it finds ore, mine it, come home.
@@ -283,6 +317,9 @@ end
 local function askAI(q)
   q = (q:gsub("[\128-\255]", "?"))
   local body = q .. "\n\n" .. view.summary(turtles, maps, os.clock(), STALE)
+  local vs = {}
+  for k, v in pairs(values) do vs[#vs + 1] = k .. "=" .. v end
+  if #vs > 0 then body = body .. "\nCustom ore values: " .. table.concat(vs, ", ") end
   http.request({ url = BRIDGE_URL, method = "POST", body = body,
     headers = proto.signRequest(secret, body, os.epoch("utc")) })
 end
@@ -304,7 +341,7 @@ function runNext()
   if not running then return end
   local a = running
   commands[a.cmd](a.name, a.n, a.ore)
-  if a.cmd == "stop" and (not turtles[a.name] or turtles[a.name].state == "idle") then
+  if a.cmd == "value" or (a.cmd == "stop" and (not turtles[a.name] or turtles[a.name].state == "idle")) then
     runNext()
   end
 end

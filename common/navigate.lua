@@ -25,11 +25,14 @@ local state = { x = 0, y = 0, z = 0, h = 0 }
 -- cell we failed to get through. Missing = never seen (planned as stone).
 local world = {}
 local function wkey(x, y, z) return x .. "," .. y .. "," .. z end
+-- Kept between jobs (exportMemory/importMemory): every ore seen (key -> name),
+-- where we scanned, the cells we opened (tunnels), lava we could drink.
+local oreMemory, scanLog, opened, lavaCells = {}, {}, {}, {}
 
 function M.reset(x, y, z, h)
   state = { x = x or 0, y = y or 0, z = z or 0, h = h or 0 }
   M.chestH = nil
-  world = {}
+  world, oreMemory, scanLog, opened, lavaCells = {}, {}, {}, {}, {}
 end
 
 -- Remember a scan made at (ox,oy,oz) with radius r: every cell in its cube is
@@ -42,7 +45,11 @@ function M.remember(blocks, ox, oy, oz, r)
     end
   end
   for _, b in ipairs(blocks) do
-    if b.name then world[wkey(ox + b.x, oy + b.y, oz + b.z)] = b.name end
+    if b.name then
+      local k = wkey(ox + b.x, oy + b.y, oz + b.z)
+      world[k] = b.name
+      if b.name:find("lava") then lavaCells[k] = true end
+    end
   end
 end
 
@@ -75,7 +82,8 @@ local function shouldAbort() return (not homing) and stopFn ~= nil and stopFn() 
 local stepReport = nil -- called after every block moved, for a smooth live map
 local stepHook = nil   -- mineArea's per-step work: scan on the go, drop junk
 local function moved()
-  world[wkey(state.x, state.y, state.z)] = false -- we stand here: it is open now
+  local k = wkey(state.x, state.y, state.z)
+  world[k], opened[k], oreMemory[k], lavaCells[k] = false, true, nil, nil -- we stand here: open now
   if stepReport then stepReport() end
   if stepHook and not homing then stepHook() end
 end
@@ -365,6 +373,141 @@ local function freeSlots()
   return n
 end
 
+local FUEL_ITEMS = {
+  ["minecraft:coal"] = true, ["minecraft:charcoal"] = true, ["minecraft:coal_block"] = true,
+  ["minecraft:lava_bucket"] = true,
+}
+local BUCKET, LAVA_BUCKET = "minecraft:bucket", "minecraft:lava_bucket"
+local ENDER_CHEST = "enderstorage:ender_chest"
+
+-- Keep fuel and the turtle's own kit (the Geo Scanner it swaps in, a pickaxe,
+-- the bucket for lava, the EnderStorage chest); everything else is loot to drop.
+local function keepItem(name)
+  if not name then return false end
+  if FUEL_ITEMS[name] then return true end
+  if name == "advancedperipherals:geo_scanner" then return true end
+  if name:find("pickaxe") then return true end
+  if name == BUCKET or name == ENDER_CHEST then return true end
+  return false
+end
+
+local function findSlot(name)
+  for s = 1, 16 do
+    local d = turtle.getItemDetail(s)
+    if d and d.name == name then return s end
+  end
+end
+
+-- Ore worth, for choosing what to mine first. opts.values (from the base, set
+-- by the player or the AI) overrides these, e.g. { allthemodium = 40 }.
+local VALUE = { coal = 1, copper = 1, iron = 2, redstone = 2, quartz = 2, lapis = 3,
+  gold = 4, emerald = 8, diamond = 10, ancient_debris = 15, allthemodium = 20,
+  vibranium = 25, unobtainium = 30 }
+function M.oreValue(name, values)
+  local best
+  for k, v in pairs(values or {}) do
+    if name:find(k, 1, true) and (not best or v > best) then best = v end
+  end
+  if best then return best end
+  for k, v in pairs(VALUE) do
+    if name:find(k, 1, true) and (not best or v > best) then best = v end
+  end
+  return best or 1
+end
+
+local function md(a, b) return math.abs(a.x - b.x) + math.abs(a.y - b.y) + math.abs(a.z - b.z) end
+
+-- Visit order for the known ore: the most valuable tier first (1, 2-3, 4-7,
+-- 8-15, 16+), and within it the shortest trip through all of it: nearest
+-- neighbour, then 2-opt (reverse a stretch whenever that shortens the trip).
+-- Returns that tier's stops in order. Pure; recomputed as the ore list changes.
+-- ponytail: 2-opt on at most the 40 nearest of the tier, a few passes.
+function M.route(from, ores, values)
+  local top, tier = {}, -1
+  for _, o in ipairs(ores) do
+    local t = math.floor(math.log(M.oreValue(o.name, values)) / math.log(2) + 1e-9)
+    if t > tier then top, tier = { o }, t elseif t == tier then top[#top + 1] = o end
+  end
+  table.sort(top, function(a, b) return md(from, a) < md(from, b) end)
+  while #top > 40 do top[#top] = nil end
+  local path, left, cur = {}, top, from -- nearest neighbour
+  while #left > 0 do
+    local bi, bd = 1, math.huge
+    for i, o in ipairs(left) do local d = md(cur, o); if d < bd then bi, bd = i, d end end
+    cur = table.remove(left, bi); path[#path + 1] = cur
+  end
+  local function at(i) return i == 0 and from or path[i] end
+  for _ = 1, 5 do -- 2-opt, open path from a fixed start
+    local better = false
+    for i = 1, #path - 1 do
+      for j = i + 1, #path do
+        local after = path[j + 1]
+        local old = md(at(i - 1), path[i]) + (after and md(path[j], after) or 0)
+        local new = md(at(i - 1), path[j]) + (after and md(path[i], after) or 0)
+        if new < old then
+          local a, b = i, j
+          while a < b do path[a], path[b] = path[b], path[a]; a, b = a + 1, b - 1 end
+          better = true
+        end
+      end
+    end
+    if not better then break end
+  end
+  return path
+end
+
+-- Drink lava next to us (from the scan map) with the empty bucket: one bucket
+-- is 1000 fuel, a lump of coal 80. Only while there is room in the tank.
+local function sipAdjacent()
+  local fl = turtle.getFuelLevel()
+  local lim = turtle.getFuelLimit and turtle.getFuelLimit() or 100000
+  if type(fl) ~= "number" or fl > lim - 1000 then return false end
+  if not findSlot(BUCKET) then return false end
+  local drank = false
+  local function try(dx, dy, dz, face, place)
+    local k = wkey(state.x + dx, state.y + dy, state.z + dz)
+    if not lavaCells[k] then return end
+    lavaCells[k] = nil
+    if face then face() end
+    turtle.select(findSlot(BUCKET))
+    if place() then
+      world[k] = false
+      local s = findSlot(LAVA_BUCKET)
+      if s then turtle.select(s); turtle.refuel(); drank = true end
+    end
+    turtle.select(1)
+  end
+  try(0, 1, 0, nil, turtle.placeUp)
+  try(0, -1, 0, nil, turtle.placeDown)
+  for d = 0, 3 do
+    if findSlot(BUCKET) then try(DX[d], 0, DZ[d], function() turnTo(d) end, turtle.place) end
+  end
+  return drank
+end
+
+-- Unload into an EnderStorage chest carried along: put it above, drop the
+-- loot in, take it back (it keeps its frequency). No trip home. false if we
+-- have no such chest or it cannot be placed / is full.
+local function unloadHere()
+  local s = findSlot(ENDER_CHEST)
+  if not s then return false end
+  local ok = clear(turtle.detectUp, turtle.inspectUp, turtle.digUp)
+  if not ok then return false end
+  turtle.select(s)
+  if not turtle.placeUp() then turtle.select(1); return false end
+  local all = true
+  for i = 1, 16 do
+    local d = turtle.getItemDetail(i)
+    if d and not keepItem(d.name) then
+      turtle.select(i)
+      if not turtle.dropUp() then all = false end
+    end
+  end
+  turtle.select(1)
+  turtle.digUp() -- pick the chest back up (the ore is safe in its frequency)
+  return all
+end
+
 -- Drop junk into the hole below (or wherever it falls). Facing is unchanged.
 function M.dropJunk()
   for s = 1, 16 do
@@ -401,8 +544,9 @@ function M.mineArea(scanFn, areaRadius, opts)
   stopFn = opts.shouldStop -- let movement abort the moment a stop lands
   stepReport = opts.onMove and function() opts.onMove({ x = state.x, y = state.y, z = state.z }) end or nil
   local mined, reason = 0, "area clear"
-  local done, found = {}, {} -- tried keys; every ore seen (home frame)
-  local scans = {}           -- where we have scanned
+  local done, found = {}, {} -- tried keys; ore we are after (home frame)
+  local scans = scanLog      -- where we have scanned (this job and remembered ones)
+  local lavaBelow = opts.lavaBelow or 5000 -- go out of our way for lava under this fuel
 
   local function axis(lo, hi)
     local t, v = {}, lo
@@ -431,6 +575,14 @@ function M.mineArea(scanFn, areaRadius, opts)
   local function inArea(ox, oy, oz)
     return math.max(math.abs(ox - cx0), math.abs(oy - cy0), math.abs(oz - cz0)) <= areaRadius
   end
+  -- ore remembered from earlier jobs counts too
+  for k, name in pairs(oreMemory) do
+    local x, y, z = k:match("^(-?%d+),(-?%d+),(-?%d+)$")
+    x, y, z = tonumber(x), tonumber(y), tonumber(z)
+    if x and oreData({ name = name }, only) and inArea(x, y, z) then
+      found[k] = { x = x, y = y, z = z, name = name }
+    end
+  end
   local function afford(d)
     M.ensureFuel(d)
     local fl = turtle.getFuelLevel()
@@ -452,7 +604,7 @@ function M.mineArea(scanFn, areaRadius, opts)
       local k = (state.x + dx) .. "," .. (state.y + dy) .. "," .. (state.z + dz)
       if found[k] and not done[k] then
         done[k], found[k] = true, nil
-        if dig() then mined = mined + 1; world[k] = false end
+        if dig() then mined = mined + 1; world[k], opened[k], oreMemory[k] = false, true, nil end
       end
     end
     try(0, 1, 0, turtle.digUp)
@@ -497,21 +649,30 @@ function M.mineArea(scanFn, areaRadius, opts)
     M.remember(blocks, state.x, state.y, state.z, AREA_SCAN_R)
     sinceScan = 0
     scans[#scans + 1] = { x = state.x, y = state.y, z = state.z }
+    while #scanLog > 400 do table.remove(scanLog, 1) end
     local seen = {}
     for _, o in ipairs(blocks) do
-      if oreData(o, only) then
+      if oreData(o) then
         local ox, oy, oz = state.x + o.x, state.y + o.y, state.z + o.z
         local k = ox .. "," .. oy .. "," .. oz
         seen[k] = true
-        if inArea(ox, oy, oz) and not done[k] then found[k] = { x = ox, y = oy, z = oz, name = o.name } end
+        oreMemory[k] = o.name
+        if oreData(o, only) and inArea(ox, oy, oz) and not done[k] then
+          found[k] = { x = ox, y = oy, z = oz, name = o.name }
+        end
       end
     end
     -- Ghosts: ore in this scan's range that it no longer returns was dug out.
+    local function near(x, y, z)
+      return math.abs(x - state.x) <= AREA_SCAN_R and math.abs(y - state.y) <= AREA_SCAN_R
+        and math.abs(z - state.z) <= AREA_SCAN_R
+    end
     for k, o in pairs(found) do
-      if not seen[k] and math.abs(o.x - state.x) <= AREA_SCAN_R
-        and math.abs(o.y - state.y) <= AREA_SCAN_R and math.abs(o.z - state.z) <= AREA_SCAN_R then
-        found[k] = nil
-      end
+      if not seen[k] and near(o.x, o.y, o.z) then found[k] = nil end
+    end
+    for k in pairs(oreMemory) do
+      local x, y, z = k:match("^(-?%d+),(-?%d+),(-?%d+)$")
+      if not seen[k] and near(tonumber(x), tonumber(y), tonumber(z)) then oreMemory[k] = nil end
     end
     report()
     return true
@@ -520,6 +681,7 @@ function M.mineArea(scanFn, areaRadius, opts)
   stepHook = function()
     if freeSlots() < 3 then M.dropJunk() end
     grab()
+    sipAdjacent()
     sinceScan = sinceScan + 1
     if sinceScan >= scanEvery then
       if not scanHere(true) then sinceScan = scanEvery - 2 end -- on cooldown: retry soon
@@ -541,20 +703,32 @@ function M.mineArea(scanFn, areaRadius, opts)
   while true do
     if opts.shouldStop and opts.shouldStop() then reason = "stopped"; break end
 
-    -- Nearest ore first; on a tie, the one we can reach without turning.
-    local best, bestD, bestKey
-    for k, o in pairs(found) do
-      if not done[k] then
-        local dx, dz = o.x - state.x, o.z - state.z
-        local straight = (dx == 0 and dz == 0)
-          or (dz == 0 and dx * DX[state.h] > 0) or (dx == 0 and dz * DZ[state.h] > 0)
-        local d = dist(o) + (straight and 0 or 0.5)
-        if not bestD or d < bestD then best, bestD, bestKey = o, d, k end
+    -- Low on fuel and lava known close by: go and drink it first.
+    local fl = turtle.getFuelLevel()
+    if type(fl) == "number" and fl < lavaBelow and findSlot(BUCKET) then
+      local lava, ld
+      for k in pairs(lavaCells) do
+        local x, y, z = k:match("^(-?%d+),(-?%d+),(-?%d+)$")
+        local c = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
+        local d = dist(c)
+        if d <= 16 and (not ld or d < ld) then lava, ld = c, d end
+      end
+      if lava then
+        M.travel(lava.x, lava.y, lava.z, function() return dist(lava) <= 1 end)
+        sipAdjacent()
+        lavaCells[wkey(lava.x, lava.y, lava.z)] = nil -- never try the same cell twice
       end
     end
 
+    -- Most valuable first, along the shortest route through that tier.
+    local list = {}
+    for k, o in pairs(found) do if not done[k] then o.k = k; list[#list + 1] = o end end
+    local best = M.route({ x = state.x, y = state.y, z = state.z }, list, opts.values)[1]
+    local bestKey, bestD = best and best.k, best and dist(best)
+
     if best then
       if freeSlots() < 2 then M.dropJunk() end
+      if freeSlots() == 0 and unloadHere() then end -- ender chest: unload on the spot
       if freeSlots() == 0 then -- real loot only now: unload, then carry on from here
         local rx, ry, rz = state.x, state.y, state.z
         homing = true; M.travel(0, 0, 0); homing = false
@@ -562,7 +736,7 @@ function M.mineArea(scanFn, areaRadius, opts)
         if not ok then reason = why or "inventory full, no chest"; break end
         M.travel(rx, ry, rz)
       end
-      if not afford(math.ceil(bestD) + homeDist(best) + fuelBuffer) then reason = "low fuel"; break end
+      if not afford(bestD + homeDist(best) + fuelBuffer) then reason = "low fuel"; break end
       local reached = M.travel(best.x, best.y, best.z, function() return done[bestKey] end)
       if not done[bestKey] then -- not grabbed from next door on the way
         done[bestKey] = true
@@ -654,20 +828,6 @@ function M.deduceHeading(a, b)
   return true, h
 end
 
-local FUEL_ITEMS = {
-  ["minecraft:coal"] = true, ["minecraft:charcoal"] = true, ["minecraft:coal_block"] = true,
-}
-
--- Keep fuel and the turtle's own kit (the Geo Scanner it swaps in, a pickaxe);
--- everything else is loot to drop.
-local function keepItem(name)
-  if not name then return false end
-  if FUEL_ITEMS[name] then return true end
-  if name == "advancedperipherals:geo_scanner" then return true end
-  if name:find("pickaxe") then return true end
-  return false
-end
-
 -- Top up fuel from coal in the inventory when it drops below `reserve`.
 function M.ensureFuel(reserve)
   local fl = turtle.getFuelLevel()
@@ -707,6 +867,33 @@ function M.deposit()
     turnTo((state.h + 1) % 4)
   end
   return false, "no chest next to me"
+end
+
+-- Memory between jobs, as plain text: the chest side (so a moved home is
+-- noticed), remembered ore, tunnels we opened, where we scanned.
+function M.exportMemory()
+  local out = { "H " .. tostring(M.chestH) }
+  for k, name in pairs(oreMemory) do out[#out + 1] = "O " .. k .. " " .. name end
+  for k in pairs(opened) do out[#out + 1] = "A " .. k end
+  for _, sc in ipairs(scanLog) do out[#out + 1] = ("S %d,%d,%d"):format(sc.x, sc.y, sc.z) end
+  return table.concat(out, "\n")
+end
+
+-- Load it back after calibrating. Only if home is the same (same chest side);
+-- returns false and keeps nothing otherwise.
+function M.importMemory(text)
+  if type(text) ~= "string" or M.chestH == nil then return false end
+  if text:match("^H (%S+)") ~= tostring(M.chestH) then return false end
+  for line in text:gmatch("[^\n]+") do
+    local tag, k, rest = line:match("^(%a) (%-?%d+,%-?%d+,%-?%d+) ?(.*)$")
+    if tag == "O" then oreMemory[k] = rest
+    elseif tag == "A" then opened[k] = true; world[k] = false
+    elseif tag == "S" then
+      local x, y, z = k:match("^(-?%d+),(-?%d+),(-?%d+)$")
+      scanLog[#scanLog + 1] = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
+    end
+  end
+  return true
 end
 
 -- Heading without moving: the scan shows on which world side the chest is,

@@ -98,6 +98,11 @@ local ALLOWED = { scan = { 1, 16, 8 }, harvest = { 1, 24, 12 }, explore = { 1, 2
   mine = { 1, 64, 16 }, stop = false }
 
 local function parseOne(line, turtles)
+  local vore, vn = line:match("DO:%s*value%s+([%w_]+)%s+(%d+)")
+  if vore then -- how much an ore is worth (no turtle involved)
+    vn = math.max(1, math.min(100, tonumber(vn)))
+    return { cmd = "value", name = vore, n = vn, line = "value " .. vore .. " " .. vn }
+  end
   local cmd, name, n, ore = line:match("DO:%s*(%a+)%s+([%w_%-]+)%s*(%d*)%s*([%w_]*)")
   local rule = ALLOWED[cmd]
   if rule == nil or not turtles[name] then return nil end

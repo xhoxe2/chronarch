@@ -9,6 +9,7 @@ W.sel = 1
 W.chest = {}; W.chestPos = "-1,0,0"; W.chestCap = 27 * 64
 W.dropped = 0; W.lost = 0; W.dugChest = false; W.moves = 0
 W.regen = {}           -- key -> times the block reappears (falling gravel)
+W.ender = {}           -- what went into an EnderStorage chest (its frequency)
 W.out = {}
 
 local HX = { [0] = 1, 0, -1, 0 }
@@ -24,7 +25,7 @@ function W.get(x, y, z)
 end
 function W.set(x, y, z, n) W.blocks[key(x, y, z)] = n end
 
-local FUEL = { ["minecraft:coal"] = 80, ["minecraft:charcoal"] = 80 }
+local FUEL = { ["minecraft:coal"] = 80, ["minecraft:charcoal"] = 80, ["minecraft:lava_bucket"] = 1000 }
 local DROPS = {
   ["minecraft:stone"] = "minecraft:cobblestone",
   ["minecraft:iron_ore"] = "minecraft:raw_iron",
@@ -59,9 +60,13 @@ local function target(dir)
   return p.x, p.y - 1, p.z
 end
 
+local function liquid(b) return b ~= nil and (b:find("lava") or b:find("water")) ~= nil end
+W.liquid = liquid
+
 local function move(dir)
   local x, y, z = target(dir)
-  if W.get(x, y, z) then return false, "Movement obstructed" end
+  local b = W.get(x, y, z)
+  if b and not liquid(b) then return false, "Movement obstructed" end
   if W.fuel <= 0 then return false, "Out of fuel" end
   W.fuel = W.fuel - 1; W.moves = W.moves + 1
   W.pos.x, W.pos.y, W.pos.z = x, y, z
@@ -71,7 +76,7 @@ end
 local function dig(dir)
   local x, y, z = target(dir)
   local b = W.get(x, y, z)
-  if not b then return false, "Nothing to dig here" end
+  if not b or liquid(b) then return false, "Nothing to dig here" end
   if b == "minecraft:bedrock" then return false, "Cannot break unbreakable block" end
   if b == "minecraft:chest" then W.dugChest = true; return false, "chest" end
   local k = key(x, y, z)
@@ -100,9 +105,9 @@ turtle = {
   back = function() return false end,
   turnRight = function() W.h = (W.h + 1) % 4; return true end,
   turnLeft = function() W.h = (W.h + 3) % 4; return true end,
-  detect = function() return W.get(target("f")) ~= nil end,
-  detectUp = function() return W.get(target("u")) ~= nil end,
-  detectDown = function() return W.get(target("d")) ~= nil end,
+  detect = function() local b = W.get(target("f")); return b ~= nil and not liquid(b) end,
+  detectUp = function() local b = W.get(target("u")); return b ~= nil and not liquid(b) end,
+  detectDown = function() local b = W.get(target("d")); return b ~= nil and not liquid(b) end,
   dig = function() return dig("f") end,
   digUp = function() return dig("u") end,
   digDown = function() return dig("d") end,
@@ -126,6 +131,19 @@ turtle = {
     W.fuel = W.fuel + FUEL[it.name] * n
     it.count = it.count - n
     if it.count == 0 then W.inv[W.sel] = false end
+    if it.name == "minecraft:lava_bucket" then W.inv[W.sel] = { name = "minecraft:bucket", count = 1 } end
+    return true
+  end,
+  place = function() return W.place("f") end,
+  placeUp = function() return W.place("u") end,
+  placeDown = function() return W.place("d") end,
+  dropUp = function()
+    local it = W.inv[W.sel]
+    if not it then return false end
+    local x, y, z = target("u")
+    if W.get(x, y, z) ~= "enderstorage:ender_chest" then W.dropped = W.dropped + it.count
+    else W.ender[it.name] = (W.ender[it.name] or 0) + it.count end
+    W.inv[W.sel] = false
     return true
   end,
   dropDown = function()
@@ -151,6 +169,28 @@ turtle = {
     return true
   end,
 }
+
+-- Placing: an empty bucket scoops lava; an EnderStorage chest goes down.
+function W.place(dir)
+  local it = W.inv[W.sel]
+  if not it then return false end
+  local x, y, z = target(dir)
+  local b = W.get(x, y, z)
+  if it.name == "minecraft:bucket" and b == "minecraft:lava" then
+    W.set(x, y, z, "air")
+    it.count = it.count - 1
+    if it.count == 0 then W.inv[W.sel] = false end
+    addItem("minecraft:lava_bucket", 1)
+    return true
+  end
+  if it.name == "enderstorage:ender_chest" and (b == nil or liquid(b)) then
+    W.set(x, y, z, "enderstorage:ender_chest")
+    it.count = it.count - 1
+    if it.count == 0 then W.inv[W.sel] = false end
+    return true
+  end
+  return false
+end
 
 peripheral = {
   hasType = function(side, t)

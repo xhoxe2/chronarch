@@ -216,10 +216,11 @@ local function findChest()
   return false
 end
 
--- The turtle's own kit (the Geo Scanner it swaps in, a spare pickaxe) never
--- goes into the chest.
+-- The turtle's own kit (the Geo Scanner it swaps in, a spare pickaxe, the lava
+-- bucket, the EnderStorage chest) never goes into the chest.
 local function isKit(name)
   return name == "advancedperipherals:geo_scanner" or name:find("pickaxe") ~= nil
+      or name == "minecraft:bucket" or name == "enderstorage:ender_chest"
 end
 
 -- Empties everything into the chest except one stack of fuel and the kit.

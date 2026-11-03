@@ -489,6 +489,97 @@ mined, reason = nav.mineArea(scan, 16, deep)
 check("deep search: mines the diamond far below", W.get(3, -61, -2) is None and mined >= 1, (mined, reason))
 check("deep search: back home at the surface", (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0), (W.pos.x, W.pos.y, W.pos.z))
 
+# 31. Value first: a diamond further away beats coal next door.
+lua, W, nav, scan = make()
+ores = lua.eval("function() return { {x=1,y=0,z=0,name='minecraft:coal_ore'}, {x=10,y=0,z=0,name='minecraft:diamond_ore'} } end")()
+first_stop = nav.route(lua.table_from({"x": 0, "y": 0, "z": 0}), ores)[1]
+check("value: diamond before nearer coal", first_stop.name == "minecraft:diamond_ore", first_stop.name)
+custom = nav.route(lua.table_from({"x": 0, "y": 0, "z": 0}), ores, lua.table_from({"coal": 50}))[1]
+check("value: weights from the base/AI override", custom.name == "minecraft:coal_ore", custom.name)
+
+# 32. Whole route: 2-opt beats plain nearest-neighbour on a zig-zag field.
+pts = [(2, 0, 0), (-3, 0, 0), (4, 0, 0), (-5, 0, 0), (6, 0, 0), (-7, 0, 0)]
+field = lua.eval("function(n) return {} end")(0)
+for i, (x, y, z) in enumerate(pts, 1):
+    field[i] = lua.table_from({"x": x, "y": y, "z": z, "name": "minecraft:iron_ore"})
+path = nav.route(lua.table_from({"x": 0, "y": 0, "z": 0}), field)
+order = [(path[i].x, path[i].y, path[i].z) for i in range(1, len(path) + 1)]
+def length(seq):
+    cur, tot = (0, 0, 0), 0
+    for p in seq:
+        tot += sum(abs(a - b) for a, b in zip(cur, p)); cur = p
+    return tot
+nn = [(2, 0, 0), (-3, 0, 0), (4, 0, 0), (-5, 0, 0), (6, 0, 0), (-7, 0, 0)]  # what greedy does here
+check("route visits every ore", sorted(order) == sorted(pts), order)
+check("route is shorter than nearest-neighbour", length(order) < length(nn), (length(order), length(nn)))
+
+# 33. Lava for fuel: low tank, bucket in hand, lava seen nearby -> drink it.
+lua, W, nav, scan = make()
+W.scanAll = True
+W.fuel = 3000
+W.h = 0
+W.inv[1] = lua.table_from({"name": "minecraft:bucket", "count": 1})
+W.set(3, 0, 2, "minecraft:lava")
+W.set(4, 0, -1, "minecraft:iron_ore")
+nav.reset()
+nav.calibrateByChest(scan(8))
+nav.mineArea(scan, 8)
+check("lava: drank it (one bucket = +1000)", W.fuel > 3500 and W.get(3, 0, 2) is None, (W.fuel, W.get(3, 0, 2)))
+check("lava: keeps the bucket", inv_has(W, "minecraft:bucket"))
+check("lava: still mined the ore and came home", W.get(4, 0, -1) is None and (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0))
+
+# 34. Memory between jobs: ore seen in job 1 (not wanted then, out of sight
+#     from home) is a target in job 2 from the very first moment.
+lua, W, nav, scan = make()
+W.scanAll = True
+W.fuel = 40000
+W.default = lua.eval("function(x, y, z) if y <= -40 then return 'minecraft:bedrock' end return 'minecraft:stone' end")
+W.set(12, -2, 0, "minecraft:diamond_ore")
+W.set(14, -2, 3, "minecraft:iron_ore")
+nav.reset()
+nav.calibrateByChest(scan(8))
+W.scanAll = False
+nav.mineArea(scan, 16, lua.table_from({"only": "diamond"}))
+memory = nav.exportMemory()
+check("memory: job 1 got the diamond, left the iron",
+      W.get(12, -2, 0) is None and W.get(14, -2, 3) == "minecraft:iron_ore")
+W.scanAll = True
+nav.reset()
+nav.calibrateByChest(scan(8))
+W.scanAll = False
+check("memory: loads back at the same home", nav.importMemory(memory) is True)
+lua.execute("FIRST = nil")
+onprog = lua.eval("function(ores) if not FIRST then FIRST = {} for _, o in ipairs(ores) do FIRST[#FIRST + 1] = o.x .. ',' .. o.y .. ',' .. o.z end end end")
+mined, reason = nav.mineArea(scan, 16, lua.table_from({"only": "iron", "onProgress": onprog}))
+check("memory: remembered iron is a target at once", "14,-2,3" in list(lua.eval("FIRST").values()),
+      list(lua.eval("FIRST").values()))
+check("memory: job 2 mines it", W.get(14, -2, 3) is None and mined >= 1, (mined, reason))
+check("memory: forgets what is mined", "O 14,-2,3 " not in nav.exportMemory())
+W.scanAll = True
+W.chestPos = "0,0,-1"  # home moved: the chest is on another side now
+nav.reset()
+nav.calibrateByChest(scan(8))
+check("memory: refused after home moved", nav.importMemory(memory) is False)
+
+# 35. EnderStorage chest: a full inventory is unloaded on the spot, no trip home.
+lua, W, nav, scan = make()
+W.scanAll = True
+W.fuel = 20000
+for i in range(1, 15):
+    W.inv[i] = lua.table_from({"name": f"minecraft:loot_{i}", "count": 1})
+W.inv[15] = lua.table_from({"name": "enderstorage:ender_chest", "count": 1})
+ores = [(5, -2, 4), (6, -2, 4)]
+for c in ores:
+    W.set(*c, "minecraft:iron_ore")
+nav.reset()
+nav.calibrateByChest(scan(8))
+W.scanAll = False
+nav.mineArea(scan, 8)
+check("ender: loot went into the ender chest", W.ender["minecraft:loot_1"] == 1, dict(W.ender))
+check("ender: nothing to the home chest", W.chest["minecraft:loot_1"] is None)
+check("ender: took its chest back", inv_has(W, "enderstorage:ender_chest"))
+check("ender: ores mined, home", all(W.get(*c) is None for c in ores) and (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0))
+
 # 10. ensureFuel burns coal from the inventory when fuel runs low.
 lua, W, nav, scan = make()
 W.fuel = 5

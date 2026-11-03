@@ -53,6 +53,28 @@ local function loadHomeY()
   return y
 end
 local homeY = loadHomeY()
+
+-- With a GPS constellation (4 computers running `gps host x y z`) the turtle
+-- learns its height by itself; without one this quietly finds nothing.
+local function gpsHomeY()
+  if not (gps and gps.locate) then return end
+  local _, y = gps.locate(1)
+  if not y then return end
+  homeY = math.floor(y + 0.5)
+  local f = fs.open(HOME_Y_FILE, "w")
+  f.write(tostring(homeY))
+  f.close()
+end
+
+-- What the turtle learned on earlier jobs (ore seen, tunnels, scanned spots).
+local MEMORY_FILE = "/memory.txt"
+local function readFile(path)
+  if not fs.exists(path) then return nil end
+  local f = fs.open(path, "r")
+  local t = f.readAll()
+  f.close()
+  return t
+end
 local abort = false -- set by a "stop" order; the harvest checks it and comes home
 
 local function statusBody()
@@ -161,11 +183,13 @@ end
 -- every ore within radius, far past a single scan's reach. Comes home, unloads.
 local function doMineArea(j)
   abort = false
+  gpsHomeY() -- at home now: the GPS height (if any) is the home height
   local okc, h = calibrateHeading()
   if not okc then
     proto.send(secret, j.from, { type = "dig", name = name, ok = false, text = tostring(h) })
     return
   end
+  nav.importMemory(readFile(MEMORY_FILE))
   local radius = j.radius or 12
   local last, lastMove = 0, 0
   local opts = {
@@ -214,7 +238,11 @@ local function doMineArea(j)
     proto.send(secret, j.from, { type = "log", name = name,
       text = ("position corrected by scan: %d,%d,%d"):format(dx, dy, dz) })
   end
+  opts.values = j.values
   local mined, reason = nav.mineArea(scanOnce, radius, opts)
+  local mf = fs.open(MEMORY_FILE, "w")
+  mf.write(nav.exportMemory())
+  mf.close()
   local dropped = nav.deposit()
   proto.send(secret, j.from, { type = "harvest", name = name, pos = { x = 0, y = 0, z = 0 }, ores = {}, done = true })
   proto.send(secret, j.from, { type = "dig", name = name, ok = reason == "area clear" or reason == "stopped",
@@ -251,6 +279,9 @@ local function listener()
       f.write(tostring(homeY))
       f.close()
       proto.send(secret, from, { type = "log", name = name, text = "home height set to y=" .. homeY })
+    elseif msg.cmd == "forget" then
+      if fs.exists(MEMORY_FILE) then fs.delete(MEMORY_FILE) end
+      proto.send(secret, from, { type = "log", name = name, text = "memory cleared" })
     elseif msg.cmd == "stop" then
       abort = true -- handled even while busy, so a runaway harvest can be recalled
       proto.send(secret, from, { type = "log", name = name, text = "Stopping, heading home" })
@@ -286,6 +317,15 @@ local function listener()
         job = { from = from, area = true, radius = tonumber(msg.radius) or 12,
           ore = type(msg.ore) == "string" and msg.ore:match("^[%w_]+$") or nil,
           explore = msg.explore == true,
+          values = (function() -- only "word" = number pairs
+            local v = {}
+            if type(msg.values) == "table" then
+              for k, n in pairs(msg.values) do
+                if type(k) == "string" and k:match("^[%w_]+$") and tonumber(n) then v[k] = tonumber(n) end
+              end
+            end
+            return v
+          end)(),
           cx = msg.cx and tonumber(msg.cx), cy = msg.cy and tonumber(msg.cy), cz = msg.cz and tonumber(msg.cz) }
         os.queueEvent("chronarch_job")
       end
