@@ -476,6 +476,19 @@ nav.reset(0, 0, 0, 0)
 mined, reason = nav.mineArea(scan, 8)
 check("small radius, nothing: no walking at all", W.moves == 0 and mined == 0, (W.moves, mined))
 
+# 30. Deep search (what harvest diamond sends after sety): go down to the
+#     ore's depth, find it there, come back up home.
+lua, W, nav, scan = make()
+W.h = 0
+W.fuel = 40000
+W.default = lua.eval("function(x, y, z) if y <= -100 then return 'minecraft:bedrock' end return 'minecraft:stone' end")
+W.set(3, -61, -2, "minecraft:diamond_ore")
+nav.reset(0, 0, 0, 0)
+deep = lua.eval("function(y) return { only = 'diamond', center = { x = 0, y = y, z = 0 } } end")(-58)
+mined, reason = nav.mineArea(scan, 16, deep)
+check("deep search: mines the diamond far below", W.get(3, -61, -2) is None and mined >= 1, (mined, reason))
+check("deep search: back home at the surface", (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0), (W.pos.x, W.pos.y, W.pos.z))
+
 # 10. ensureFuel burns coal from the inventory when fuel runs low.
 lua, W, nav, scan = make()
 W.fuel = 5

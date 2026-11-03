@@ -63,6 +63,7 @@ function M.summary(turtles, maps, now, staleAfter)
     local online = t.seen and (now - t.seen) <= staleAfter
     local line = ("%s: %s, %s, fuel %s."):format(name, online and "online" or "offline",
       online and (t.state or "idle") or "unknown", tostring(t.fuel))
+    if t.homeY then line = line .. (" Home at y=%d."):format(t.homeY) end
     local ores = maps[name] and maps[name].ores or {}
     if #ores > 0 then
       local counts, kinds, near = {}, {}, {}

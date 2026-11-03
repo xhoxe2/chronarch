@@ -41,10 +41,22 @@ local equipTool = (toolSide == "left") and turtle.equipLeft or turtle.equipRight
 local SCANNER_ITEM = "advancedperipherals:geo_scanner"
 
 local state, job = "idle", nil
+
+-- The turtle's home height (y of the spot by the chest). There is no GPS, so
+-- the player tells it once with `sety <name> <y>` on the base; kept in a file.
+local HOME_Y_FILE = "/home_y"
+local function loadHomeY()
+  if not fs.exists(HOME_Y_FILE) then return nil end
+  local f = fs.open(HOME_Y_FILE, "r")
+  local y = tonumber(f.readAll())
+  f.close()
+  return y
+end
+local homeY = loadHomeY()
 local abort = false -- set by a "stop" order; the harvest checks it and comes home
 
 local function statusBody()
-  return { type = "status", name = name, fuel = turtle.getFuelLevel(), state = state }
+  return { type = "status", name = name, fuel = turtle.getFuelLevel(), state = state, homeY = homeY }
 end
 
 local function findItem(item)
@@ -185,6 +197,18 @@ local function doMineArea(j)
   }
   if j.cx then opts.center = { x = j.cx, y = j.cy or 0, z = j.cz or 0 } end
   opts.only = j.ore
+  -- Ore with a known best depth: go down there to search (home stays by the chest).
+  if j.ore and not j.cx then
+    local dy, y = orescan.depthFor(j.ore, homeY)
+    if dy and dy < 0 then
+      opts.center = { x = 0, y = dy, z = 0 }
+      proto.send(secret, j.from, { type = "log", name = name,
+        text = ("going down %d blocks to y=%d, best height for %s"):format(-dy, y, j.ore) })
+    elseif not homeY then
+      proto.send(secret, j.from, { type = "log", name = name,
+        text = "tip: tell me my height (sety " .. name .. " <y>) and I dig down to the ore's best depth" })
+    end
+  end
   opts.explore = j.explore
   opts.onFix = function(dx, dy, dz) -- the scan showed we were off; tell the base
     proto.send(secret, j.from, { type = "log", name = name,
@@ -221,6 +245,12 @@ local function listener()
     local from, msg = proto.receive(secret) -- only correctly signed messages return
     if msg.cmd == "ping" then
       proto.send(secret, from, statusBody())
+    elseif msg.cmd == "sety" and tonumber(msg.y) then
+      homeY = math.floor(tonumber(msg.y))
+      local f = fs.open(HOME_Y_FILE, "w")
+      f.write(tostring(homeY))
+      f.close()
+      proto.send(secret, from, { type = "log", name = name, text = "home height set to y=" .. homeY })
     elseif msg.cmd == "stop" then
       abort = true -- handled even while busy, so a runaway harvest can be recalled
       proto.send(secret, from, { type = "log", name = name, text = "Stopping, heading home" })

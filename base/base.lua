@@ -95,7 +95,7 @@ local function receiver()
         if not t then
           out(("+ %s online, fuel %s"):format(msg.name, tostring(msg.fuel)), colors.lime)
         end
-        turtles[msg.name] = { id = id, fuel = msg.fuel, state = msg.state, seen = os.clock() }
+        turtles[msg.name] = { id = id, fuel = msg.fuel, state = msg.state, seen = os.clock(), homeY = msg.homeY }
       elseif msg.type == "log" then
         if t then t.seen = os.clock() end
         out("[" .. msg.name .. "] " .. tostring(msg.text), colors.lightGray)
@@ -155,6 +155,7 @@ function commands.help()
   out("scan <name> [radius]       find ores around a turtle", colors.yellow)
   out("harvest <name> [r] [ore]   find ore within r, mine it, come home", colors.yellow)
   out("explore <name> [r] [ore]   sweep the WHOLE area, mine everything", colors.yellow)
+  out("sety <name> <y>            turtle's home height (F3) -> digs to ore depth", colors.yellow)
   out("stop <name>                recall a turtle (stop, come home)", colors.yellow)
   out("map <name> | status        show a turtle's ore map / the list", colors.yellow)
   out("(tap an ore on the map -> harvest that cluster)", colors.lightGray)
@@ -227,6 +228,18 @@ local function areaJob(cmd, name, radius, ore)
   if turtles[name] then turtles[name].state = "digging" end
   out(("-> %s: %s r%d%s   (watch live: map %s)"):format(name, cmd, radius,
     ore and (" only " .. ore) or "", name), colors.cyan)
+end
+
+-- sety: tell a turtle the height of its home (y on the F3 screen / minimap), so
+-- harvest of a vanilla ore digs down to that ore's best depth by itself.
+function commands.sety(name, y)
+  local id = name and (turtles[name] and turtles[name].id or rednet.lookup(PROTOCOL, name))
+  if not id or not tonumber(y) then
+    out("Usage: sety <name> <y>   (y of the turtle's spot, from F3)", colors.orange)
+    return
+  end
+  proto.send(secret, id, { cmd = "sety", y = tonumber(y) })
+  out(("-> %s: home height y=%d"):format(name, tonumber(y)), colors.cyan)
 end
 
 -- harvest: search within the radius until it finds ore, mine it, come home.

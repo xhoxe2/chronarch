@@ -44,6 +44,25 @@ function M.summarize(blocks)
   return { total = total, counts = arr, nearest = nearest, ores = ores }
 end
 
+-- Height where each vanilla ore is most common (Minecraft 1.21 world gen).
+-- Modded ores are not listed: for them the turtle searches from home level.
+local BEST_Y = { diamond = -59, redstone = -59, gold = -16, lapis = 0,
+  iron = 16, copper = 48, coal = 96, emerald = 232 }
+
+-- How far down (negative) to go from a home at homeY to find `ore` best, plus
+-- the target height. Never up (ore up a mountain is not worth the climb), never
+-- into the bedrock floor. nil if the ore or the home height is unknown.
+function M.depthFor(ore, homeY)
+  if type(ore) ~= "string" or type(homeY) ~= "number" then return nil end
+  for key, y in pairs(BEST_Y) do
+    if ore:find(key, 1, true) then
+      y = math.max(y, -58)
+      return math.min(0, y - homeY), y
+    end
+  end
+  return nil
+end
+
 -- "minecraft:iron_ore" -> "iron_ore"
 function M.short(name)
   return (tostring(name):match("[^:]+$")) or tostring(name)

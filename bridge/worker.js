@@ -28,7 +28,9 @@ const SYSTEM =
   "harvest <turtle> <radius 1-24> [ore word, e.g. diamond, to mine only that] " +
   "(searches the area, close and shallow first, until it finds that ore, mines " +
   "it, comes home) | explore <turtle> <radius 1-24> [ore word] (sweeps the WHOLE " +
-  "area and mines everything; only if the player asks to clear or explore it) | " +
+  "area and mines everything; only if the player asks to clear or explore it). " +
+  "With a vanilla ore word and a known home height, harvest/explore dig down to " +
+  "that ore's best depth by themselves. | " +
   "mine <turtle> <length 1-64> | stop <turtle>. " +
   "harvest scans by itself while it works, so add a separate scan only if the " +
   "player asks for one. The player confirms the plan before it runs. Otherwise " +

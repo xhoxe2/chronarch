@@ -65,6 +65,15 @@ check("empty: no counts", len(e.counts) == 0, len(e.counts))
 # short()
 check("short strips modid", M.short("minecraft:iron_ore") == "iron_ore", M.short("minecraft:iron_ore"))
 
+# Best depth for an ore, from the home height.
+check("depth: diamond from y=63 goes down 121 to y=-58", M.depthFor("diamond", 63) == (-121, -58),
+      M.depthFor("diamond", 63))
+check("depth: gold from y=63 -> y=-16", M.depthFor("gold", 63) == (-79, -16))
+check("depth: coal is best above home -> stay at home level", M.depthFor("coal", 63)[0] == 0)
+check("depth: full ore id works too", M.depthFor("minecraft:deepslate_diamond_ore", 10)[1] == -58)
+check("depth: unknown home height -> nil", M.depthFor("diamond", None) is None)
+check("depth: modded ore -> nil", M.depthFor("allthemodium", 63) is None)
+
 width = max(len(n) for n, _, _ in results)
 for n, good, d in results:
     print(("PASS " if good else "FAIL ") + n.ljust(width) + ("" if good else f"  -> {d}"))

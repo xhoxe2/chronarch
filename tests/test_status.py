@@ -62,6 +62,8 @@ s_ = summary(t, m).split("\n")
 check("summary: header + one line per turtle, sorted", len(s_) == 3 and s_[1].startswith("old:")
       and s_[2].startswith("xhoxi:"), s_)
 check("summary: online turtle with state and fuel", "xhoxi: online, digging, fuel 800." in s_[2], s_[2])
+hy = summary(mk("{xhoxi = {id=0, fuel=800, state='idle', seen=99, homeY=63}}"), mk("{}")).split("\n")[1]
+check("summary: home height when known", "Home at y=63." in hy, hy)
 check("summary: stale turtle is offline", "old: offline, unknown, fuel 5." == s_[1], s_[1])
 check("summary: ore counts, most first, mod prefix dropped",
       s_[2].endswith("Ore it knows from home: 2 iron_ore (nearest 2 blocks), 1 diamond_ore (nearest 8 blocks), "
