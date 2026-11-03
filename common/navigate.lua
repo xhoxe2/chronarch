@@ -23,16 +23,20 @@ local state = { x = 0, y = 0, z = 0, h = 0 }
 
 function M.reset(x, y, z, h)
   state = { x = x or 0, y = y or 0, z = z or 0, h = h or 0 }
+  M.chestH = nil
 end
 
 function M.pos() return state.x, state.y, state.z, state.h end
+
+local function isContainer(name)
+  return type(name) == "string" and (name:find("chest") or name:find("barrel") or name:find("shulker")) ~= nil
+end
 
 local function isProtected(name)
   if not name then return false end
   if name == "minecraft:bedrock" then return true end
   if name:find("^computercraft:") then return true end
-  if name:find("chest") or name:find("barrel") or name:find("shulker") then return true end
-  return false
+  return isContainer(name)
 end
 
 -- Dig in a direction only if what's there is safe to break.
@@ -49,7 +53,11 @@ end
 local stopFn, homing = nil, false
 local function shouldAbort() return (not homing) and stopFn ~= nil and stopFn() end
 local stepReport = nil -- called after every block moved, for a smooth live map
-local function moved() if stepReport then stepReport() end end
+local stepHook = nil   -- mineArea's per-step work: scan on the go, drop junk
+local function moved()
+  if stepReport then stepReport() end
+  if stepHook and not homing then stepHook() end
+end
 
 local function stepForward()
   if shouldAbort() then return false, "stopped" end
@@ -145,31 +153,69 @@ function M.mineVein()
   return veinMined
 end
 
-local AREA_SCAN_R = 8
+local AREA_SCAN_R = 8 -- the Geo Scanner's free radius; bigger costs fuel/is capped
 
-local function oreData(o)
+local function oreData(o, only)
   if type(o) ~= "table" or not o.name then return false end
+  if only and not o.name:find(only, 1, true) then return false end
   if o.tags and o.tags["c:ores"] then return true end
   return o.name:find("_ore") ~= nil
 end
 
--- Harvest every ore within areaRadius of the start: scan the ~8-block vicinity,
--- walk to the nearest ore and take its whole vein, re-scan, repeat until the
--- area is clear (or fuel/inventory/limit runs out). Ends back at the start.
--- Needs the heading already calibrated. scanFn(r) returns the raw scan; the
--- caller handles equipping the scanner. Returns (mined blocks, reason string).
+-- Junk the turtle throws away on the go (same list as mine.lua), so it only
+-- drives home with real loot.
+local JUNK = {
+  ["minecraft:cobblestone"] = true, ["minecraft:cobbled_deepslate"] = true,
+  ["minecraft:stone"] = true, ["minecraft:deepslate"] = true,
+  ["minecraft:dirt"] = true, ["minecraft:gravel"] = true,
+  ["minecraft:sand"] = true, ["minecraft:netherrack"] = true,
+  ["minecraft:andesite"] = true, ["minecraft:diorite"] = true,
+  ["minecraft:granite"] = true, ["minecraft:tuff"] = true,
+  ["minecraft:calcite"] = true, ["minecraft:flint"] = true,
+}
+
+local function freeSlots()
+  local n = 0
+  for s = 1, 16 do if turtle.getItemCount(s) == 0 then n = n + 1 end end
+  return n
+end
+
+-- Drop junk into the hole below (or wherever it falls). Facing is unchanged.
+function M.dropJunk()
+  for s = 1, 16 do
+    local d = turtle.getItemDetail(s)
+    if d and JUNK[d.name] then turtle.select(s); turtle.dropDown() end
+  end
+  turtle.select(1)
+end
+
+-- Harvest every ore within areaRadius of the start (or of opts.center):
+--   * go straight to the NEAREST known ore, one block at a time, so a vein is
+--     eaten cell by cell with no spinning to look around;
+--   * scan on the go every few steps (no waiting on the scanner's cooldown), so
+--     new ore shows up while it walks;
+--   * only when no known ore is left, walk to the nearest part of the area no
+--     scan has covered yet and scan there;
+--   * throw junk away on the go, drive home only to unload real loot.
+-- Needs the heading already calibrated. scanFn(r, quick) returns the raw scan
+-- (quick = one try, no cooldown wait). Ends back at the start.
+-- Returns (ores mined, reason string).
 function M.mineArea(scanFn, areaRadius, opts)
   opts = opts or {}
-  local step = opts.step or 14 -- waypoint spacing, <= 2 * scan radius so scans overlap
+  local step = opts.step or 14         -- spacing of exploration points (<= 2 * scan radius)
+  local scanEvery = opts.scanEvery or 6 -- steps between scans on the go
+  local cover = opts.cover or 4        -- a point counts as explored if scanned within this
   local fuelBuffer = opts.fuelBuffer or 40
-  local onProgress = opts.onProgress -- function(remainingOres, {x,y,z}) for the live map
+  local only = opts.only               -- e.g. "diamond": mine only ore with this in its name
+  local onProgress = opts.onProgress   -- function(remainingOres, {x,y,z}) for the live map
   local cx0, cy0, cz0 = 0, 0, 0
   if opts.center then cx0, cy0, cz0 = opts.center.x or 0, opts.center.y or 0, opts.center.z or 0 end
 
   stopFn = opts.shouldStop -- let movement abort the moment a stop lands
   stepReport = opts.onMove and function() opts.onMove({ x = state.x, y = state.y, z = state.z }) end or nil
   local mined, reason = 0, "area clear"
-  local done, found = {}, {} -- mined keys; every ore seen (home frame)
+  local done, found = {}, {} -- tried keys; every ore seen (home frame)
+  local scans = {}           -- where we have scanned
 
   local function axis(lo, hi)
     local t, v = {}, lo
@@ -185,27 +231,20 @@ function M.mineArea(scanFn, areaRadius, opts)
   else
     ys = (areaRadius <= AREA_SCAN_R) and { 0 } or axis(-areaRadius, 0) -- ore is below home
   end
-
-  local waypoints = {}
-  for yi, yy in ipairs(ys) do
-    for zi, zz in ipairs(zs) do
-      local row = {}
-      for i = 1, #xs do row[i] = xs[i] end
-      if (yi + zi) % 2 == 0 then -- snake, to keep travel short
-        local r = {}; for i = #row, 1, -1 do r[#r + 1] = row[i] end; row = r
-      end
-      for _, xx in ipairs(row) do waypoints[#waypoints + 1] = { x = xx, y = yy, z = zz } end
+  local points = {}
+  for _, yy in ipairs(ys) do
+    for _, zz in ipairs(zs) do
+      for _, xx in ipairs(xs) do points[#points + 1] = { x = xx, y = yy, z = zz } end
     end
   end
 
+  local function dist(o) return math.abs(o.x - state.x) + math.abs(o.y - state.y) + math.abs(o.z - state.z) end
+  local function homeDist(o) return math.abs(o.x) + math.abs(o.y) + math.abs(o.z) end
   local function inArea(ox, oy, oz)
     return math.max(math.abs(ox - cx0), math.abs(oy - cy0), math.abs(oz - cz0)) <= areaRadius
   end
-  local function invFull()
-    for s = 1, 16 do if turtle.getItemCount(s) == 0 then return false end end
-    return true
-  end
   local function afford(d)
+    M.ensureFuel(d)
     local fl = turtle.getFuelLevel()
     return type(fl) ~= "number" or fl >= d
   end
@@ -216,70 +255,90 @@ function M.mineArea(scanFn, areaRadius, opts)
     onProgress(rem, { x = state.x, y = state.y, z = state.z })
   end
 
-  local reach = step -- one waypoint sees and can reach every ore up to `step` away
-  for _, wp in ipairs(waypoints) do
-    if opts.shouldStop and opts.shouldStop() then reason = "stopped"; break end
-    local dWp = math.abs(wp.x - state.x) + math.abs(wp.y - state.y) + math.abs(wp.z - state.z)
-    local dHome = math.abs(wp.x) + math.abs(wp.y) + math.abs(wp.z)
-    M.ensureFuel(dWp + dHome + fuelBuffer)
-    if not afford(dWp + dHome + fuelBuffer) then reason = "low fuel"; break end
-    M.travel(wp.x, wp.y, wp.z) -- a blocked waypoint just leaves us nearby; fine
-
-    -- ONE scan per waypoint. The Geo Scanner has a cooldown, so re-scanning after
-    -- every vein (the old way) left the turtle standing still for seconds at a
-    -- time and froze the live map. Mine everything this single scan reveals.
-    local blocks = scanFn(AREA_SCAN_R)
-    if type(blocks) == "table" then
-      local seen = {}
-      for _, o in ipairs(blocks) do
-        if oreData(o) then
-          local ox, oy, oz = state.x + o.x, state.y + o.y, state.z + o.z
-          local k = ox .. "," .. oy .. "," .. oz
-          seen[k] = true
-          if inArea(ox, oy, oz) then found[k] = { x = ox, y = oy, z = oz, name = o.name } end
-        end
-      end
-      -- Drop ghosts: an ore near enough to be in this scan's range but no longer
-      -- returned has been dug out (a whole vein vanishes at once), so forget it.
-      for k, o in pairs(found) do
-        if not seen[k] and math.abs(o.x - state.x) <= AREA_SCAN_R
-          and math.abs(o.y - state.y) <= AREA_SCAN_R
-          and math.abs(o.z - state.z) <= AREA_SCAN_R then
-          found[k], done[k] = nil, nil
-        end
-      end
-      report()
-
-      while true do -- take every ore in reach, nearest first, no re-scan
-        if opts.shouldStop and opts.shouldStop() then reason = "stopped"; break end
-        local best, bestD, bestKey
-        for k, o in pairs(found) do
-          if not done[k] then
-            local d = math.abs(o.x - state.x) + math.abs(o.y - state.y) + math.abs(o.z - state.z)
-            if d <= reach and (not bestD or d < bestD) then bestD, best, bestKey = d, o, k end
-          end
-        end
-        if not best then break end -- the rest waits for a nearer waypoint
-
-        local toHome = math.abs(best.x) + math.abs(best.y) + math.abs(best.z)
-        M.ensureFuel(bestD + toHome + fuelBuffer)
-        if not afford(bestD + toHome + fuelBuffer) then reason = "low fuel"; break end
-
-        done[bestKey] = true
-        if M.travel(best.x, best.y, best.z) then mined = mined + 1 + M.mineVein() end
-        report()
-
-        if invFull() then -- unload and come back to the same spot
-          local rx, ry, rz = state.x, state.y, state.z
-          M.travel(0, 0, 0)
-          if not M.deposit() then reason = "inventory full, no chest"; break end
-          M.travel(rx, ry, rz)
-        end
+  local sinceScan = 0
+  local function scanHere(quick)
+    local blocks = scanFn(AREA_SCAN_R, quick)
+    if type(blocks) ~= "table" then return false end
+    sinceScan = 0
+    scans[#scans + 1] = { x = state.x, y = state.y, z = state.z }
+    local seen = {}
+    for _, o in ipairs(blocks) do
+      if oreData(o, only) then
+        local ox, oy, oz = state.x + o.x, state.y + o.y, state.z + o.z
+        local k = ox .. "," .. oy .. "," .. oz
+        seen[k] = true
+        if inArea(ox, oy, oz) and not done[k] then found[k] = { x = ox, y = oy, z = oz, name = o.name } end
       end
     end
-    if reason == "stopped" or reason == "low fuel" or reason == "inventory full, no chest" then break end
+    -- Ghosts: ore in this scan's range that it no longer returns was dug out.
+    for k, o in pairs(found) do
+      if not seen[k] and math.abs(o.x - state.x) <= AREA_SCAN_R
+        and math.abs(o.y - state.y) <= AREA_SCAN_R and math.abs(o.z - state.z) <= AREA_SCAN_R then
+        found[k] = nil
+      end
+    end
+    report()
+    return true
   end
 
+  stepHook = function()
+    if freeSlots() < 3 then M.dropJunk() end
+    sinceScan = sinceScan + 1
+    if sinceScan >= scanEvery then
+      if not scanHere(true) then sinceScan = scanEvery - 2 end -- on cooldown: retry soon
+    end
+  end
+
+  local function explored(p)
+    for _, sc in ipairs(scans) do
+      if math.max(math.abs(sc.x - p.x), math.abs(sc.y - p.y), math.abs(sc.z - p.z)) <= cover then return true end
+    end
+    return false
+  end
+
+  scanHere(false)
+  while true do
+    if opts.shouldStop and opts.shouldStop() then reason = "stopped"; break end
+
+    local best, bestD, bestKey
+    for k, o in pairs(found) do
+      if not done[k] then
+        local d = dist(o)
+        if not bestD or d < bestD then best, bestD, bestKey = o, d, k end
+      end
+    end
+
+    if best then
+      if not afford(bestD + homeDist(best) + fuelBuffer) then reason = "low fuel"; break end
+      done[bestKey] = true
+      if M.travel(best.x, best.y, best.z) then mined = mined + 1 end
+      found[bestKey] = nil
+      report()
+      if freeSlots() < 2 then M.dropJunk() end
+      if freeSlots() == 0 then -- real loot only now: unload and come back
+        local rx, ry, rz = state.x, state.y, state.z
+        homing = true; M.travel(0, 0, 0); homing = false
+        local ok, why = M.deposit()
+        if not ok then reason = why or "inventory full, no chest"; break end
+        M.travel(rx, ry, rz)
+      end
+    else
+      local next, nd
+      for _, p in ipairs(points) do
+        if not p.done and not explored(p) then
+          local d = dist(p)
+          if not nd or d < nd then next, nd = p, d end
+        end
+      end
+      if not next then break end -- every ore found is mined, every corner scanned
+      if not afford(nd + homeDist(next) + fuelBuffer) then reason = "low fuel"; break end
+      next.done = true -- even if the way is blocked, don't try forever
+      M.travel(next.x, next.y, next.z)
+      scanHere(false)
+    end
+  end
+
+  stepHook = nil
   if opts.onHoming then opts.onHoming() end
   homing = true
   M.travel(0, 0, 0) -- always come home, even on stop
@@ -373,24 +432,59 @@ function M.ensureFuel(reserve)
   turtle.select(1)
 end
 
--- Face an adjacent chest/barrel/shulker and drop the loot into it.
+local function unload()
+  for s = 1, 16 do
+    local d = turtle.getItemDetail(s)
+    if d and not keepItem(d.name) then turtle.select(s); turtle.drop() end
+  end
+  turtle.select(1)
+end
+
+-- Face the chest at home and drop the loot into it. If calibration saw where
+-- the chest is, turn straight to it; finding no chest there means our position
+-- is off, so report "lost" instead of driving on with a wrong map. Every turn
+-- is tracked, so the heading stays right after unloading.
 function M.deposit()
+  if M.chestH then
+    turnTo(M.chestH)
+    local ok, data = turtle.inspect()
+    if ok and isContainer(data.name) then unload(); return true end
+    return false, "lost: no chest where home should be"
+  end
   for _ = 1, 4 do
     local ok, data = turtle.inspect()
-    if ok and data.name and (data.name:find("chest") or data.name:find("barrel") or data.name:find("shulker")) then
-      for s = 1, 16 do
-        local d = turtle.getItemDetail(s)
-        if d and not keepItem(d.name) then
-          turtle.select(s)
-          turtle.drop()
-        end
+    if ok and isContainer(data.name) then unload(); return true end
+    turnTo((state.h + 1) % 4)
+  end
+  return false, "no chest next to me"
+end
+
+-- Heading without moving: the scan shows on which world side the chest is,
+-- turning until the chest is in front tells which way we face. Needs exactly
+-- one chest/barrel beside the turtle, level with it. Sets home = here.
+function M.calibrateByChest(blocks)
+  if type(blocks) ~= "table" then return false, "scan failed" end
+  local side
+  for _, b in ipairs(blocks) do
+    if b.y == 0 and isContainer(b.name) then
+      local h = unit(b.x, b.z)
+      if h then
+        if side then return false, "more than one chest beside me" end
+        side = h
       end
-      turtle.select(1)
-      return true
+    end
+  end
+  if not side then return false, "no chest beside me" end
+  for _ = 1, 4 do
+    local ok, data = turtle.inspect()
+    if ok and isContainer(data.name) then
+      state = { x = 0, y = 0, z = 0, h = side }
+      M.chestH = side
+      return true, side
     end
     turtle.turnRight()
   end
-  return false
+  return false, "chest not found by turning"
 end
 
 -- All-in-one (used by the tests): scan, step, scan, deduce.

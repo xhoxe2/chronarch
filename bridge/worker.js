@@ -24,7 +24,8 @@ const SYSTEM =
   "colony status (turtles, fuel, ore they found): base your advice on it. " +
   "If the player asks you to act, or one action clearly helps, end with ONE extra " +
   "line 'DO: <command>' using exactly one of: scan <turtle> <radius 1-16> | " +
-  "harvest <turtle> <radius 1-24> | mine <turtle> <length 1-64> | stop <turtle>. " +
+  "harvest <turtle> <radius 1-24> [ore word, e.g. diamond, to mine only that] | " +
+  "mine <turtle> <length 1-64> | stop <turtle>. " +
   "The player confirms it before it runs. Otherwise write no DO line.";
 
 const enc = new TextEncoder();

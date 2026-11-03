@@ -76,11 +76,12 @@ end
 local CAL_RADIUS = 8
 
 -- Equip the scanner, scan (retrying through its cooldown), put the pickaxe back.
-local function scanOnce(r)
+-- quick = one try only (scans on the go must not stall the walk).
+local function scanOnce(r, quick)
   local sc = equipScanner()
   if not sc then return nil end
   local blocks
-  for _ = 1, 6 do
+  for _ = 1, quick and 1 or 6 do
     blocks = sc.scanBlocks(r or CAL_RADIUS)
     if type(blocks) == "table" then break end
     sleep(1.5) -- Geo Scanner cooldown
@@ -89,10 +90,13 @@ local function scanOnce(r)
   return blocks
 end
 
--- Work out the heading: scan, step some clear way, scan again, deduce.
+-- Work out the heading. Best: by the chest beside home (no step, no ores
+-- needed). Fallback: scan, step some clear way, scan again, deduce.
 local function calibrateHeading()
   nav.reset()
   local a = scanOnce()
+  local okc, h = nav.calibrateByChest(a)
+  if okc then return true, h end
   if type(a) ~= "table" or #a == 0 then return false, "no ores to calibrate heading" end
   local moved, me = nav.probeAnyDir()
   if not moved then return false, "cannot move to calibrate: " .. tostring(me) end
@@ -180,11 +184,13 @@ local function doMineArea(j)
     end,
   }
   if j.cx then opts.center = { x = j.cx, y = j.cy or 0, z = j.cz or 0 } end
+  opts.only = j.ore
   local mined, reason = nav.mineArea(scanOnce, radius, opts)
   local dropped = nav.deposit()
   proto.send(secret, j.from, { type = "harvest", name = name, pos = { x = 0, y = 0, z = 0 }, ores = {}, done = true })
   proto.send(secret, j.from, { type = "dig", name = name, ok = true,
-    text = ("harvest r%d: %d blocks (%s), %s"):format(radius, mined, tostring(reason), dropped and "unloaded" or "no chest"),
+    text = ("harvest r%d%s: %d ores (%s), %s"):format(radius, j.ore and (" " .. j.ore) or "", mined,
+      tostring(reason), dropped and "unloaded" or "no chest"),
     fuel = turtle.getFuelLevel() })
 end
 
@@ -243,6 +249,7 @@ local function listener()
       else
         state = "digging"
         job = { from = from, area = true, radius = tonumber(msg.radius) or 12,
+          ore = type(msg.ore) == "string" and msg.ore:match("^[%w_]+$") or nil,
           cx = msg.cx and tonumber(msg.cx), cy = msg.cy and tonumber(msg.cy), cz = msg.cz and tonumber(msg.cz) }
         os.queueEvent("chronarch_job")
       end

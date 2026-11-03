@@ -128,6 +128,13 @@ turtle = {
     if it.count == 0 then W.inv[W.sel] = false end
     return true
   end,
+  dropDown = function()
+    local it = W.inv[W.sel]
+    if not it then return false, "No items to drop" end
+    W.dropped = W.dropped + it.count
+    W.inv[W.sel] = false
+    return true
+  end,
   drop = function()
     local it = W.inv[W.sel]
     if not it then return false, "No items to drop" end
@@ -154,15 +161,19 @@ peripheral = {
   end,
 }
 
--- Geo Scanner: ores within radius of the turtle, in world coords relative to it.
+-- Geo Scanner: blocks within radius of the turtle, in world coords relative to
+-- it. Only ores by default (fast); W.scanAll = true returns every non-air block
+-- like the real scanner (chest included).
+W.scans = 0
 function W.scanBlocks(radius)
+  W.scans = W.scans + 1
   local out = {}
   for dx = -radius, radius do
     for dy = -radius, radius do
       for dz = -radius, radius do
         local b = W.get(W.pos.x + dx, W.pos.y + dy, W.pos.z + dz)
-        if b and ORE[b] then
-          out[#out + 1] = { x = dx, y = dy, z = dz, name = b, tags = { ["c:ores"] = true } }
+        if b and (ORE[b] or W.scanAll) then
+          out[#out + 1] = { x = dx, y = dy, z = dz, name = b, tags = { ["c:ores"] = ORE[b] or nil } }
         end
       end
     end

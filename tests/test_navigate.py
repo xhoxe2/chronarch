@@ -230,6 +230,89 @@ check("vein fully cleared in the world",
       all(W.get(*c) != "minecraft:iron_ore" for c in vein),
       [c for c in vein if W.get(*c) == "minecraft:iron_ore"])
 
+# 11. Compass by the chest: no step, no ores needed, ends facing the chest.
+lua, W, nav, scan = make()
+W.scanAll = True
+W.h = 3  # facing north; the mock's chest is west (-1,0,0)
+nav.reset()
+ok, h = nav.calibrateByChest(scan(8))
+check("chest compass finds the heading", ok and h == 2 and W.h == 2, (ok, h, W.h))
+check("chest compass does not move", W.moves == 0 and (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0))
+lua, W, nav, scan = make()
+W.scanAll = True
+W.chestPos = "99,99,99"  # no chest
+nav.reset()
+check("chest compass reports a missing chest", first(nav.calibrateByChest(scan(8))) is False)
+
+# 12. Regression: unloading at the chest must not scramble the heading.
+lua, W, nav, scan = make()
+W.h = 0
+nav.reset(0, 0, 0, 0)  # facing east, chest west: deposit has to turn
+W.inv[1] = lua.table_from({"name": "minecraft:raw_iron", "count": 2})
+nav.deposit()
+nav.travel(3, 0, 2)
+check("heading survives a deposit", (W.pos.x, W.pos.y, W.pos.z) == (3, 0, 2), (W.pos.x, W.pos.z))
+
+# 13. A full inventory mid-harvest: unload, go back, finish, end home.
+lua, W, nav, scan = make()
+W.scanAll = True
+W.fuel = 40000
+for i in range(1, 16):  # 15 slots of loot that is not junk
+    W.inv[i] = lua.table_from({"name": f"minecraft:loot_{i}", "count": 1})
+ores = [(4, 0, 2), (-3, 0, 5), (6, -2, -4)]
+for c in ores:
+    W.set(*c, "minecraft:iron_ore")
+nav.reset()
+nav.calibrateByChest(scan(8))
+W.scanAll = False
+mined, reason = nav.mineArea(scan, 8)
+check("full inventory: unloads into the chest", W.chest["minecraft:loot_1"] == 1, reason)
+check("full inventory: still clears every ore",
+      all(W.get(*c) != "minecraft:iron_ore" for c in ores), (mined, reason))
+check("full inventory: ends home", (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0), (W.pos.x, W.pos.y, W.pos.z))
+
+# 14. Lost: the chest is not where calibration saw it -> deposit says so.
+lua, W, nav, scan = make()
+W.scanAll = True
+nav.reset()
+nav.calibrateByChest(scan(8))
+W.chestPos = "99,99,99"
+ok, why = nav.deposit()
+check("deposit reports lost when the chest is gone", ok is False and "lost" in why, why)
+
+# 15. Ore filter: harvest only diamonds, leave the iron.
+lua, W, nav, scan = make()
+W.h = 1
+W.fuel = 20000
+W.set(3, 0, 0, "minecraft:iron_ore")
+W.set(4, 0, 3, "minecraft:diamond_ore")
+nav.reset()
+nav.calibrate(scan)
+nav.mineArea(scan, 8, lua.table_from({"only": "diamond"}))
+check("ore filter mines the diamond", W.get(4, 0, 3) != "minecraft:diamond_ore")
+check("ore filter leaves the iron", W.get(3, 0, 0) == "minecraft:iron_ore")
+
+# 16. Scans on the go: the turtle scans while walking, without waiting.
+lua, W, nav, scan = make()
+W.h = 1
+W.fuel = 40000
+W.set(3, 0, 0, "minecraft:iron_ore")
+W.set(10, -6 + 2, 9, "minecraft:iron_ore")
+lua.execute("QUICK = 0")
+qscan = lua.eval("function(W) return function(r, quick) if quick then QUICK = QUICK + 1 end return W.scanBlocks(r) end end")(W)
+nav.reset()
+nav.calibrate(scan)
+nav.mineArea(qscan, 12)
+check("scans on the go while walking", lua.eval("QUICK") > 0, lua.eval("QUICK"))
+
+# 17. dropJunk throws stone away and keeps loot.
+lua, W, nav, scan = make()
+W.inv[1] = lua.table_from({"name": "minecraft:cobblestone", "count": 64})
+W.inv[2] = lua.table_from({"name": "minecraft:raw_iron", "count": 3})
+nav.dropJunk()
+check("dropJunk drops cobblestone", not W.inv[1] and W.dropped == 64)
+check("dropJunk keeps the ore", inv_has(W, "minecraft:raw_iron"))
+
 # 10. ensureFuel burns coal from the inventory when fuel runs low.
 lua, W, nav, scan = make()
 W.fuel = 5

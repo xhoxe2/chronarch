@@ -141,7 +141,7 @@ function commands.help()
   out("list                       who is online", colors.yellow)
   out("mine <name> <len> [depth]  send a turtle mining", colors.yellow)
   out("scan <name> [radius]       find ores around a turtle", colors.yellow)
-  out("harvest <name> [radius]    mine ALL ore in an area", colors.yellow)
+  out("harvest <name> [r] [ore]   mine ore in an area (ore: e.g. diamond)", colors.yellow)
   out("stop <name>                recall a turtle (stop, come home)", colors.yellow)
   out("map <name> | status        show a turtle's ore map / the list", colors.yellow)
   out("(tap an ore on the map -> harvest that cluster)", colors.lightGray)
@@ -199,9 +199,9 @@ function commands.scan(name, radius)
   render()
 end
 
-function commands.harvest(name, radius)
+function commands.harvest(name, radius, ore)
   if not name then
-    out("Usage: harvest <name> [radius]", colors.orange)
+    out("Usage: harvest <name> [radius] [ore]", colors.orange)
     return
   end
   local id = turtles[name] and turtles[name].id or rednet.lookup(PROTOCOL, name)
@@ -210,9 +210,10 @@ function commands.harvest(name, radius)
     return
   end
   radius = tonumber(radius) or 12
-  proto.send(secret, id, { cmd = "mineArea", radius = radius })
+  proto.send(secret, id, { cmd = "mineArea", radius = radius, ore = ore })
   if turtles[name] then turtles[name].state = "digging" end
-  out(("-> %s: harvest area r%d   (watch live: map %s)"):format(name, radius, name), colors.cyan)
+  out(("-> %s: harvest area r%d%s   (watch live: map %s)"):format(name, radius,
+    ore and (" only " .. ore) or "", name), colors.cyan)
 end
 
 function commands.stop(name)
@@ -267,7 +268,7 @@ function commands.yes()
   end
   local a = pending
   pending = nil
-  commands[a.cmd](a.name, a.n)
+  commands[a.cmd](a.name, a.n, a.ore)
 end
 
 function commands.clear()

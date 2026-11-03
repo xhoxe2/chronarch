@@ -65,19 +65,24 @@ function M.summary(turtles, maps, now, staleAfter)
       online and (t.state or "idle") or "unknown", tostring(t.fuel))
     local ores = maps[name] and maps[name].ores or {}
     if #ores > 0 then
-      local counts, kinds = {}, {}
+      local counts, kinds, near = {}, {}, {}
       for _, o in ipairs(ores) do
         local k = (tostring(o.name):match("[^:]+$"))
         if not counts[k] then kinds[#kinds + 1] = k end
         counts[k] = (counts[k] or 0) + 1
+        local d = math.abs(o.x or 0) + math.abs(o.y or 0) + math.abs(o.z or 0)
+        near[k] = math.min(near[k] or d, d)
       end
       table.sort(kinds, function(a, b)
         if counts[a] ~= counts[b] then return counts[a] > counts[b] end
         return a < b
       end)
       local parts = {}
-      for i = 1, math.min(6, #kinds) do parts[i] = counts[kinds[i]] .. " " .. kinds[i] end
-      line = line .. " Ore it knows nearby: " .. table.concat(parts, ", ") .. "."
+      for i = 1, math.min(6, #kinds) do
+        local k = kinds[i]
+        parts[i] = ("%d %s (nearest %d blocks)"):format(counts[k], k, near[k])
+      end
+      line = line .. " Ore it knows from home: " .. table.concat(parts, ", ") .. "."
     end
     lines[#lines + 1] = line
   end
@@ -92,7 +97,7 @@ local ALLOWED = { scan = { 1, 16, 8 }, harvest = { 1, 24, 12 }, mine = { 1, 64, 
 
 function M.parseAction(text, turtles)
   local answer = text:gsub("\n?DO:[^\n]*", "")
-  local cmd, name, n = text:match("DO:%s*(%a+)%s+([%w_%-]+)%s*(%d*)")
+  local cmd, name, n, ore = text:match("DO:%s*(%a+)%s+([%w_%-]+)%s*(%d*)%s*([%w_]*)")
   local rule = ALLOWED[cmd]
   if rule == nil or not turtles[name] then return answer, nil end
   if rule then
@@ -100,8 +105,9 @@ function M.parseAction(text, turtles)
   else
     n = nil
   end
-  return answer, { cmd = cmd, name = name, n = n,
-    line = cmd .. " " .. name .. (n and (" " .. n) or "") }
+  if cmd ~= "harvest" or ore == "" then ore = nil end
+  return answer, { cmd = cmd, name = name, n = n, ore = ore,
+    line = cmd .. " " .. name .. (n and (" " .. n) or "") .. (ore and (" " .. ore) or "") }
 end
 
 return M
