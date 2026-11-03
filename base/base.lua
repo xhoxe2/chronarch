@@ -5,12 +5,14 @@
 --
 -- Setup: an ender modem on any side of the computer, and /chronarch.key (the
 -- same key as on the turtles).
--- Commands: help | list | mine <name> <length> [depth] | clear
+-- Commands: help | list | mine <name> <length> [depth] | ask <question> | clear
 
 local proto = require("chronarch")
 local view = require("statusview")
 local oremap = require("oremap")
 local PROTOCOL = proto.PROTOCOL
+-- The bridge (bridge/worker.js): holds the AI key, so this computer never does.
+local BRIDGE_URL = "https://chronarch-bridge.chronarch.workers.dev/ask"
 
 local secret = proto.loadSecret()
 if not secret then
@@ -142,6 +144,7 @@ function commands.help()
   out("stop <name>                recall a turtle (stop, come home)", colors.yellow)
   out("map <name> | status        show a turtle's ore map / the list", colors.yellow)
   out("(tap an ore on the map -> harvest that cluster)", colors.lightGray)
+  out("ask <question>             ask the AI (English)", colors.yellow)
   out("clear                      clear the screen", colors.yellow)
 end
 
@@ -241,6 +244,18 @@ function commands.status()
   out("Monitor: turtle list", colors.lightGray)
 end
 
+-- The answer comes back later as an http_success/http_failure event (asker).
+function commands.ask(...)
+  local q = (table.concat({ ... }, " "):gsub("[\128-\255]", "?"))
+  if q == "" then
+    out("Usage: ask <question>", colors.orange)
+    return
+  end
+  http.request({ url = BRIDGE_URL, method = "POST", body = q,
+    headers = proto.signRequest(secret, q, os.epoch("utc")) })
+  out("-> AI: " .. q, colors.cyan)
+end
+
 function commands.clear()
   logWin.clear()
   logWin.setCursorPos(1, 1)
@@ -293,6 +308,18 @@ local function toucher()
   end
 end
 
+local function asker()
+  while true do
+    local ev, url, a, b = os.pullEvent()
+    if (ev == "http_success" or ev == "http_failure") and url == BRIDGE_URL then
+      local res = ev == "http_success" and a or b -- failure carries a handle on 4xx/5xx
+      local text = res and res.readAll() or tostring(a)
+      if res then res.close() end
+      out("AI: " .. text, ev == "http_success" and colors.lime or colors.red)
+    end
+  end
+end
+
 -- Pings everyone every few seconds so the monitor stays fresh and offline
 -- turtles get noticed. Calm rhythm: one broadcast per cycle.
 local function ticker()
@@ -309,7 +336,7 @@ if monitor then out("Status monitor attached.", colors.lightGray) end
 proto.broadcast(secret, { cmd = "ping" })
 render()
 -- On exit (Ctrl+T) put the terminal back, so the shell is visible again.
-local okRun, runErr = pcall(parallel.waitForAny, receiver, console, ticker, toucher)
+local okRun, runErr = pcall(parallel.waitForAny, receiver, console, ticker, toucher, asker)
 term.redirect(root)
 term.setTextColor(colors.white)
 term.setBackgroundColor(colors.black)

@@ -144,6 +144,15 @@ function M.verify(secret, msg)
   return eq(good, sig)
 end
 
+-- Headers for a signed HTTP request to the bridge (bridge/worker.js).
+-- now = os.epoch("utc") in ms; the bridge refuses requests older than 2 min.
+function M.signRequest(secret, body, now)
+  local ts = ("%d"):format(now)
+  -- A plain User-Agent: Cloudflare rejects some generic client ones (error 1010).
+  return { ["X-TS"] = ts, ["X-Sig"] = M.hmac(secret, ts .. "\n" .. body),
+    ["User-Agent"] = "chronarch-base" }
+end
+
 -- Signed rednet wrappers ---------------------------------------------------
 -- All traffic goes through these, so a script can never forget to sign on the
 -- way out or to check on the way in.

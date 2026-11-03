@@ -1,0 +1,9 @@
+name = "chronarch-bridge"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+
+[vars]
+# Alias for the newest Flash-Lite model: fast, biggest free quota, rarely overloaded.
+MODEL = "gemini-flash-lite-latest"
+
+# Secrets (never in this file): npx wrangler secret put GEMINI_KEY / CHRONARCH_KEY
