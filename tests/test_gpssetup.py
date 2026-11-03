@@ -17,12 +17,15 @@ def check(name, cond, detail=""):
     results.append((name, bool(cond), detail))
 
 
-def run(args, modem=True):
+def run(args, modem=True, existing=()):
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute("FILES = {}; LABEL = nil; REBOOTED = false; OUT = {}")
     lua.execute("print = function(s) OUT[#OUT + 1] = s end; sleep = function() end")
     lua.execute("os.setComputerLabel = function(l) LABEL = l end; os.reboot = function() REBOOTED = true end")
-    lua.execute("""fs = { open = function(p) return {
+    lua.globals().EXISTING = lua.table_from(list(existing))
+    lua.execute("os.getComputerID = function() return 1 end")
+    lua.execute("""fs = { exists = function(p) for _, e in ipairs(EXISTING) do if e == p then return true end end return false end,
+        open = function(p) return {
         write = function(s) FILES[p] = (FILES[p] or '') .. s end, close = function() end } end }""")
     lua.execute("peripheral = { find = function(t, f) if %s then return { isWireless = function() return true end } end end }"
                 % ("true" if modem else "false"))
@@ -41,6 +44,10 @@ check("missing coords: usage, writes nothing", lua.eval("next(FILES)") is None a
 
 lua = run(["1", "2", "3"], modem=False)
 check("no modem: says so, writes nothing", lua.eval("next(FILES)") is None and "modem" in lua.eval("OUT[1]"))
+
+lua = run(["645", "63", "-107", "gps1"], existing=("/chronarch.key",))
+check("shared id with a CHRONARCH machine: refuses, writes nothing",
+      lua.eval("next(FILES)") is None and "share" in lua.eval("table.concat(OUT, ' ')") and lua.eval("LABEL") is None)
 
 for n, good, d in results:
     print(("PASS " if good else "FAIL ") + n + ("" if good else f"  -> {d}"))

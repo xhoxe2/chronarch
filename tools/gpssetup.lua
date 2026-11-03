@@ -16,6 +16,17 @@ if not peripheral.find("modem", function(_, m) return m.isWireless() end) then
   print("No ender modem on this computer. Attach one, then run this again.")
   return
 end
+-- A computer copied in creative (middle-click on a labelled one) keeps the
+-- SAME id, and two machines with one id share one set of files. If this one
+-- already holds another CHRONARCH program, writing a GPS startup here would
+-- break that machine too, so stop and say why.
+if fs.exists("/chronarch.key") or fs.exists("/.program") then
+  print(("Computer #%d already runs CHRONARCH."):format(os.getComputerID()))
+  print("Two computers share this id (a creative")
+  print("copy). Break this one, place a NEW computer")
+  print("from the creative tab, run this again.")
+  return
+end
 if label then os.setComputerLabel(label) end
 local f = fs.open("startup.lua", "w")
 f.write(('shell.run("gps", "host", %d, %d, %d)\n'):format(x, y, z))
