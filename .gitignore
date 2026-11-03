@@ -1,0 +1,15 @@
+# Python test env (local only)
+.venv/
+__pycache__/
+*.pyc
+
+# Fetched CC: Tweaked rom modules (downloaded by tests/fetch_ccrom.sh)
+tests/ccrom/
+
+# Secrets — the shared key lives only on game computers, never in the repo
+*.key
+chronarch.key
+
+# Probe reports and junk
+probe-*.json
+.DS_Store
