@@ -251,8 +251,10 @@ function commands.ask(...)
     out("Usage: ask <question>", colors.orange)
     return
   end
-  http.request({ url = BRIDGE_URL, method = "POST", body = q,
-    headers = proto.signRequest(secret, q, os.epoch("utc")) })
+  -- the AI also gets the live colony status, so it answers about this colony
+  local body = q .. "\n\n" .. view.summary(turtles, maps, os.clock(), STALE)
+  http.request({ url = BRIDGE_URL, method = "POST", body = body,
+    headers = proto.signRequest(secret, body, os.epoch("utc")) })
   out("-> AI: " .. q, colors.cyan)
 end
 

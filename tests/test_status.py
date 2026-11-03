@@ -52,6 +52,20 @@ check("fuel is shown", "800" in rows[3] and "120" in rows[2], (rows[2], rows[3])
 rows = lines(mk("{a = {id=1, fuel=64, state='idle', seen=100}}"), 100, 12)
 check("fresh idle turtle is lime", rows[2].startswith("lime|") and "idle" in rows[2], rows[2])
 
+# summary for the AI
+summary = lambda t, m, now=100: view.summary(t, m, now, 12)
+check("summary: no turtles", "no turtles online" in summary(mk("{}"), mk("{}")))
+t = mk("{xhoxi = {id=0, fuel=800, state='digging', seen=99}, old = {id=2, fuel=5, state='idle', seen=0}}")
+m = mk("{xhoxi = {ores = {{name='minecraft:iron_ore'}, {name='minecraft:diamond_ore'}, "
+       "{name='minecraft:iron_ore'}, {name='create:zinc_ore'}}}}")
+s_ = summary(t, m).split("\n")
+check("summary: header + one line per turtle, sorted", len(s_) == 3 and s_[1].startswith("old:")
+      and s_[2].startswith("xhoxi:"), s_)
+check("summary: online turtle with state and fuel", "xhoxi: online, digging, fuel 800." in s_[2], s_[2])
+check("summary: stale turtle is offline", "old: offline, unknown, fuel 5." == s_[1], s_[1])
+check("summary: ore counts, most first, mod prefix dropped",
+      s_[2].endswith("Ore it knows nearby: 2 iron_ore, 1 diamond_ore, 1 zinc_ore."), s_[2])
+
 width = max(len(n) for n, _, _ in results)
 for n, good, d in results:
     print(("PASS " if good else "FAIL ") + n.ljust(width) + ("" if good else f"  -> {d}"))

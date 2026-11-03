@@ -50,4 +50,38 @@ function M.format(turtles, now, staleAfter)
   return rows
 end
 
+-- Plain-text colony status for the AI, appended to `ask` questions so the
+-- answer is about this colony. maps: name -> { ores = { {name=...}, ... } }.
+function M.summary(turtles, maps, now, staleAfter)
+  local names = {}
+  for name in pairs(turtles) do names[#names + 1] = name end
+  table.sort(names)
+  local lines = { "Colony status (live):" }
+  if #names == 0 then lines[2] = "no turtles online" end
+  for _, name in ipairs(names) do
+    local t = turtles[name]
+    local online = t.seen and (now - t.seen) <= staleAfter
+    local line = ("%s: %s, %s, fuel %s."):format(name, online and "online" or "offline",
+      online and (t.state or "idle") or "unknown", tostring(t.fuel))
+    local ores = maps[name] and maps[name].ores or {}
+    if #ores > 0 then
+      local counts, kinds = {}, {}
+      for _, o in ipairs(ores) do
+        local k = (tostring(o.name):match("[^:]+$"))
+        if not counts[k] then kinds[#kinds + 1] = k end
+        counts[k] = (counts[k] or 0) + 1
+      end
+      table.sort(kinds, function(a, b)
+        if counts[a] ~= counts[b] then return counts[a] > counts[b] end
+        return a < b
+      end)
+      local parts = {}
+      for i = 1, math.min(6, #kinds) do parts[i] = counts[kinds[i]] .. " " .. kinds[i] end
+      line = line .. " Ore it knows nearby: " .. table.concat(parts, ", ") .. "."
+    end
+    lines[#lines + 1] = line
+  end
+  return table.concat(lines, "\n")
+end
+
 return M

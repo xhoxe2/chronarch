@@ -14,13 +14,14 @@
 // not within those 2 minutes. Add a seen-nonce store (KV/D1) if that matters.
 
 const MAX_AGE_MS = 120000;
-const MAX_QUESTION = 500;
+const MAX_QUESTION = 2000; // question + colony status
 const MAX_ANSWER = 600;
 
 const SYSTEM =
   "You are CHRONARCH, the AI of a colony of mining turtles in Minecraft " +
   "(CC: Tweaked, All the Mods 10 modpack). Answer in English, plain text, " +
-  "no markdown, at most 3 short sentences.";
+  "no markdown, at most 3 short sentences. The message may end with a live " +
+  "colony status (turtles, fuel, ore they found): base your advice on it.";
 
 const enc = new TextEncoder();
 
