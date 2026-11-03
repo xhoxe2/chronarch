@@ -51,6 +51,7 @@ local MON_COLORS = { white = colors.white, orange = colors.orange, magenta = col
 -- with `map <name>`. Each turtle's ore data accumulates in the background.
 local viewMode, mapTarget = "status", nil
 local maps = {} -- name -> { name=, ores=, total=, turtle= }
+local pending -- the AI's last suggested action, runs only after `yes`
 
 local function renderStatus()
   local rows = view.format(turtles, os.clock(), STALE)
@@ -145,6 +146,7 @@ function commands.help()
   out("map <name> | status        show a turtle's ore map / the list", colors.yellow)
   out("(tap an ore on the map -> harvest that cluster)", colors.lightGray)
   out("ask <question>             ask the AI (English)", colors.yellow)
+  out("yes                        run what the AI suggested", colors.yellow)
   out("clear                      clear the screen", colors.yellow)
 end
 
@@ -258,6 +260,16 @@ function commands.ask(...)
   out("-> AI: " .. q, colors.cyan)
 end
 
+function commands.yes()
+  if not pending then
+    out("The AI has not suggested anything.", colors.orange)
+    return
+  end
+  local a = pending
+  pending = nil
+  commands[a.cmd](a.name, a.n)
+end
+
 function commands.clear()
   logWin.clear()
   logWin.setCursorPos(1, 1)
@@ -317,7 +329,14 @@ local function asker()
       local res = ev == "http_success" and a or b -- failure carries a handle on 4xx/5xx
       local text = res and res.readAll() or tostring(a)
       if res then res.close() end
-      out("AI: " .. text, ev == "http_success" and colors.lime or colors.red)
+      if ev == "http_success" then
+        local answer, act = view.parseAction(text, turtles)
+        out("AI: " .. answer, colors.lime)
+        pending = act
+        if act then out("AI suggests: " .. act.line .. "   (type yes to run)", colors.yellow) end
+      else
+        out("AI: " .. text, colors.red)
+      end
     end
   end
 end

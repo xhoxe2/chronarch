@@ -23,7 +23,7 @@ M = load_chronarch(lua)
 SECRET = "correct horse battery staple"
 ENV = {"CHRONARCH_KEY": SECRET + "\n", "GEMINI_KEY": "test-gemini-key", "MODEL": "gemini-test"}
 GEMINI_OK = {"candidates": [{"content": {"parts": [
-    {"text": "Mine **iron** — it’s close… привет\n"}]}}]}
+    {"text": "Mine **iron** — it’s close… привет\nDO: harvest xhoxi_2 12\n"}]}}]}
 
 
 def signed(q, now_ms=None, secret=SECRET):
@@ -61,7 +61,7 @@ empty = signed("")
 r = run([ok, tampered, old, wrong, unsigned, get, empty])
 
 check("genuine Lua-signed request -> 200", r[0]["status"] == 200, r[0])
-check("answer is ASCII without markdown", r[0]["text"] == "Mine iron - it's close...", r[0]["text"])
+check("answer is ASCII without markdown, DO line kept", r[0]["text"] == "Mine iron - it's close...\nDO: harvest xhoxi_2 12", r[0]["text"])
 check("Gemini gets the key and model", r[0]["geminiCalls"] and r[0]["geminiCalls"][0]["key"] == "test-gemini-key"
       and "/models/gemini-test:generateContent" in r[0]["geminiCalls"][0]["url"], r[0]["geminiCalls"])
 check("Gemini gets the question",

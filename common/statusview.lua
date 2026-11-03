@@ -84,4 +84,24 @@ function M.summary(turtles, maps, now, staleAfter)
   return table.concat(lines, "\n")
 end
 
+-- The AI may end its answer with one line "DO: <command>" (see SYSTEM in
+-- bridge/worker.js). Returns the answer without that line, plus the action if
+-- it is one we allow, for a turtle we know, with numbers clamped to safe
+-- limits. The base still asks the player to confirm with `yes`.
+local ALLOWED = { scan = { 1, 16, 8 }, harvest = { 1, 24, 12 }, mine = { 1, 64, 16 }, stop = false }
+
+function M.parseAction(text, turtles)
+  local answer = text:gsub("\n?DO:[^\n]*", "")
+  local cmd, name, n = text:match("DO:%s*(%a+)%s+([%w_%-]+)%s*(%d*)")
+  local rule = ALLOWED[cmd]
+  if rule == nil or not turtles[name] then return answer, nil end
+  if rule then
+    n = math.max(rule[1], math.min(rule[2], tonumber(n) or rule[3]))
+  else
+    n = nil
+  end
+  return answer, { cmd = cmd, name = name, n = n,
+    line = cmd .. " " .. name .. (n and (" " .. n) or "") }
+end
+
 return M

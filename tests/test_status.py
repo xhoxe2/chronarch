@@ -66,6 +66,20 @@ check("summary: stale turtle is offline", "old: offline, unknown, fuel 5." == s_
 check("summary: ore counts, most first, mod prefix dropped",
       s_[2].endswith("Ore it knows nearby: 2 iron_ore, 1 diamond_ore, 1 zinc_ore."), s_[2])
 
+# AI action line
+known = mk("{xhoxi = {id=0}}")
+def act(text):
+    ans, a = view.parseAction(text, known)
+    return ans, (a.line if a else None)
+check("action: harvest parsed, line removed",
+      act("Diamonds nearby.\nDO: harvest xhoxi 12") == ("Diamonds nearby.", "harvest xhoxi 12"))
+check("action: radius clamped", act("Go.\nDO: scan xhoxi 99")[1] == "scan xhoxi 16")
+check("action: default number", act("Go.\nDO: mine xhoxi")[1] == "mine xhoxi 16")
+check("action: stop has no number", act("Halt.\nDO: stop xhoxi")[1] == "stop xhoxi")
+check("action: unknown command ignored", act("x\nDO: dig xhoxi 5")[1] is None)
+check("action: unknown turtle ignored", act("x\nDO: harvest ghost 5")[1] is None)
+check("action: no DO line", act("Just advice.") == ("Just advice.", None))
+
 width = max(len(n) for n, _, _ in results)
 for n, good, d in results:
     print(("PASS " if good else "FAIL ") + n.ljust(width) + ("" if good else f"  -> {d}"))
