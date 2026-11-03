@@ -22,6 +22,9 @@ local top = window.create(root, 1, 1, w, h - 2)
 local msgLine = window.create(root, 1, h - 1, w, 1)
 local input = window.create(root, 1, h, w, 1)
 local turtles, last, following, followAt = {}, nil, nil, nil
+local helpUntil = 0 -- `help` shows the orders for a few seconds instead of the status
+local HELP = { "Orders (name optional):", " come here", " follow / stay", " home", " stash",
+  " dig here 8", " light", "Ctrl+T: quit" }
 
 local function say(text, color)
   msgLine.setBackgroundColor(colors.black)
@@ -36,6 +39,10 @@ local function draw()
   top.setBackgroundColor(colors.black)
   top.clear()
   local rows = view.compact(turtles, os.clock(), 12)
+  if os.clock() < helpUntil then
+    rows = {}
+    for i, l in ipairs(HELP) do rows[i] = { text = l, color = i == 1 and "yellow" or "white" } end
+  end
   for i, r in ipairs(rows) do
     if i > h - 2 then break end
     top.setCursorPos(1, i)
@@ -146,14 +153,19 @@ local function console()
       history[#history + 1] = line
       local known = {}
       for n in pairs(turtles) do known[n] = true end
-      local a, why = buddy.parse(line, known, last)
-      if a then act(a) else say(why, colors.orange) end
+      if line:match("^%s*help%s*$") then
+        helpUntil = os.clock() + 15
+        draw()
+      else
+        local a, why = buddy.parse(line, known, last)
+        if a then act(a) else say(why, colors.orange) end
+      end
     end
   end
 end
 
 root.clear()
-say("CHRONARCH \183 buddy  e.g. come here", colors.lightGray)
+say("CHRONARCH \183 buddy  (help)", colors.lightGray)
 draw()
 proto.broadcast(secret, { cmd = "ping" })
 parallel.waitForAny(listen, poll, follow, console)
