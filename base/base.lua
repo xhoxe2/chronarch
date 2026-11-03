@@ -10,6 +10,7 @@
 local proto = require("chronarch")
 local view = require("statusview")
 local oremap = require("oremap")
+local swarm = require("swarm")
 local PROTOCOL = proto.PROTOCOL
 -- The bridge (bridge/worker.js): holds the AI key, so this computer never does.
 local BRIDGE_URL = "https://chronarch-bridge.chronarch.workers.dev/ask"
@@ -180,6 +181,7 @@ function commands.help()
   out("sety <name> <y>            turtle's home height (F3) -> digs to ore depth", colors.yellow)
   out("value <ore> <n>            how much an ore is worth (most valuable first)", colors.yellow)
   out("forget <name>              clear a turtle's map memory", colors.yellow)
+  out("swarm <r> [ore]            all idle turtles share the area round base", colors.yellow)
   out("stop <name>                recall a turtle (stop, come home)", colors.yellow)
   out("map <name> | status        show a turtle's ore map / the list", colors.yellow)
   out("(tap an ore on the map -> harvest that cluster)", colors.lightGray)
@@ -252,6 +254,35 @@ local function areaJob(cmd, name, radius, ore)
   if turtles[name] then turtles[name].state = "digging" end
   out(("-> %s: %s r%d%s   (watch live: map %s)"):format(name, cmd, radius,
     ore and (" only " .. ore) or "", name), colors.cyan)
+end
+
+-- swarm: share the square of radius r round the base between every idle
+-- turtle that knows where it is (GPS): one x-stripe each, never the same
+-- ground. Each sweeps its stripe (explore) and comes home.
+function commands.swarm(radius, ore)
+  radius = tonumber(radius)
+  if not radius then
+    out("Usage: swarm <radius> [ore]   (all idle turtles, area split)", colors.orange)
+    return
+  end
+  local bx, _, bz = gps.locate(1)
+  if not bx then out("swarm needs GPS (gps locate on this computer)", colors.red); return end
+  local list = {}
+  for name, t in pairs(turtles) do
+    local fresh = t.seen and os.clock() - t.seen <= STALE
+    if fresh and t.state == "idle" and type(t.pos) == "table" and t.pos.abs then
+      list[#list + 1] = { name = name, x = t.pos.x, id = t.id }
+    end
+  end
+  if #list == 0 then out("No idle turtles with GPS. (list)", colors.orange); return end
+  local parts = swarm.split(math.floor(bx + 0.5), math.floor(bz + 0.5), radius, list)
+  for _, t in ipairs(list) do
+    local b = parts[t.name]
+    proto.send(secret, t.id, { cmd = "mineArea", radius = radius, ore = ore, explore = true,
+      values = values, bounds = b })
+    turtles[t.name].state = "digging"
+    out(("-> %s: swarm x %d..%d%s"):format(t.name, b.x1, b.x2, ore and (" only " .. ore) or ""), colors.cyan)
+  end
 end
 
 -- sety: tell a turtle the height of its home (y on the F3 screen / minimap), so
@@ -353,7 +384,7 @@ function runNext()
   if not running then return end
   local a = running
   commands[a.cmd](a.name, a.n, a.ore)
-  if a.cmd == "value" or (a.cmd == "stop" and (not turtles[a.name] or turtles[a.name].state == "idle")) then
+  if a.cmd == "value" or a.cmd == "swarm" or (a.cmd == "stop" and (not turtles[a.name] or turtles[a.name].state == "idle")) then
     runNext()
   end
 end

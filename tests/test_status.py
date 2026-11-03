@@ -107,6 +107,8 @@ check("action: harvest with an ore filter", act("Go.\nDO: harvest xhoxi 12 diamo
 check("action: explore with an ore filter", act("Go.\nDO: explore xhoxi 20 diamond")[1] == "explore xhoxi 20 diamond")
 check("action: ore value from the AI", act("Ok.\nDO: value allthemodium 40")[1] == "value allthemodium 40")
 check("action: ore value clamped", act("Ok.\nDO: value coal 999")[1] == "value coal 100")
+check("action: swarm with ore", act("Go.\nDO: swarm 32 diamond")[1] == "swarm 32 diamond")
+check("action: swarm radius clamped", act("Go.\nDO: swarm 500")[1] == "swarm 48")
 check("action: ore word only for harvest", act("Go.\nDO: scan xhoxi 8 diamond")[1] == "scan xhoxi 8")
 
 width = max(len(n) for n, _, _ in results)

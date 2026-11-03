@@ -61,7 +61,7 @@ RAW = "https://raw.githubusercontent.com/xhoxe2/chronarch/main/"
 writes, urls = run(is_turtle=False)
 got = set(writes.keys())
 check("base writes exactly its file set",
-      got == {"startup.lua", "statusview.lua", "oremap.lua", "chronarch.lua", "update.lua"}, got)
+      got == {"startup.lua", "statusview.lua", "oremap.lua", "swarm.lua", "chronarch.lua", "update.lua"}, got)
 check("base startup.lua comes from base/base.lua",
       "-- body " + RAW + "base/base.lua" == writes.get("startup.lua"), writes.get("startup.lua"))
 check("base pulls oremap from common/oremap.lua",

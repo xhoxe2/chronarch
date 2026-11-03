@@ -307,6 +307,16 @@ local function doMineArea(j)
     end
   end
   opts.explore = j.explore
+  -- A swarm stripe comes in world coordinates: turn it into ours (needs GPS).
+  if j.bounds then
+    if not homeX then
+      proto.send(secret, j.from, { type = "dig", name = name, ok = false,
+        text = "no GPS here: cannot take a swarm stripe" })
+      return
+    end
+    local b = j.bounds
+    opts.bounds = { x1 = b.x1 - homeX, x2 = b.x2 - homeX, z1 = b.z1 - homeZ, z2 = b.z2 - homeZ }
+  end
   opts.onFix = function(dx, dy, dz) -- the scan showed we were off; tell the base
     proto.send(secret, j.from, { type = "log", name = name,
       text = ("position corrected by scan: %d,%d,%d"):format(dx, dy, dz) })
@@ -395,6 +405,10 @@ local function listener()
         job = { from = from, area = true, radius = tonumber(msg.radius) or 12,
           ore = type(msg.ore) == "string" and msg.ore:match("^[%w_]+$") or nil,
           explore = msg.explore == true,
+          bounds = (type(msg.bounds) == "table" and tonumber(msg.bounds.x1) and tonumber(msg.bounds.x2)
+            and tonumber(msg.bounds.z1) and tonumber(msg.bounds.z2))
+            and { x1 = tonumber(msg.bounds.x1), x2 = tonumber(msg.bounds.x2),
+                  z1 = tonumber(msg.bounds.z1), z2 = tonumber(msg.bounds.z2) } or nil,
           values = (function() -- only "word" = number pairs
             local v = {}
             if type(msg.values) == "table" then

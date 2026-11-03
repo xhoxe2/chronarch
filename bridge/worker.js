@@ -31,7 +31,9 @@ const SYSTEM =
   "area and mines everything; only if the player asks to clear or explore it). " +
   "With a vanilla ore word and a known home height, harvest/explore dig down to " +
   "that ore's best depth by themselves. | " +
-  "mine <turtle> <length 1-64> | stop <turtle> | value <ore word> <1-100> (how much " +
+  "mine <turtle> <length 1-64> | stop <turtle> | swarm <radius 1-48> [ore word] (ALL " +
+  "idle turtles split the area round the base and clear it together) | " +
+  "value <ore word> <1-100> (how much " +
   "an ore is worth; harvest mines the most valuable first: default coal 1, iron 2, " +
   "gold 4, emerald 8, diamond 10, allthemodium 20). " +
   "harvest scans by itself while it works, so add a separate scan only if the " +

@@ -612,6 +612,21 @@ check("layer search: finds the diamond at depth", W.get(38, -35, 25) is None and
 check("layer search: never wanders far below the layer", lua.eval("YMIN") >= -36, lua.eval("YMIN"))
 check("layer search: back home", (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0))
 
+# 38. Swarm stripe: only the ore inside its own x/z stripe; ore in the next
+#     turtle's stripe is left alone, even when it is seen first.
+lua, W, nav, scan = make()
+W.h = 0
+W.fuel = 40000
+W.set(-6, -2, 3, "minecraft:iron_ore")   # next to home, but in the other stripe
+W.set(14, -2, -5, "minecraft:iron_ore")  # in our stripe
+W.set(20, -1, 8, "minecraft:iron_ore")   # in our stripe
+nav.reset(0, 0, 0, 0)
+stripe = lua.eval("function() return { bounds = { x1 = 10, x2 = 30, z1 = -20, z2 = 20 }, center = { x = 0, y = 0, z = 0 }, explore = true } end")()
+nav.mineArea(scan, 20, stripe)
+check("stripe: mines the ore in its stripe", W.get(14, -2, -5) is None and W.get(20, -1, 8) is None)
+check("stripe: leaves the other turtle's ore", W.get(-6, -2, 3) == "minecraft:iron_ore")
+check("stripe: back home", (W.pos.x, W.pos.y, W.pos.z) == (0, 0, 0))
+
 # 10. ensureFuel burns coal from the inventory when fuel runs low.
 lua, W, nav, scan = make()
 W.fuel = 5

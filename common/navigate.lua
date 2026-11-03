@@ -555,6 +555,14 @@ function M.mineArea(scanFn, areaRadius, opts)
   local onProgress = opts.onProgress   -- function(remainingOres, {x,y,z}) for the live map
   local cx0, cy0, cz0 = 0, 0, 0
   if opts.center then cx0, cy0, cz0 = opts.center.x or 0, opts.center.y or 0, opts.center.z or 0 end
+  -- The x/z rectangle to work in: a square of areaRadius round the centre, or
+  -- opts.bounds = { x1, x2, z1, z2 } (one turtle's stripe of a shared area).
+  local bx1, bx2, bz1, bz2 = cx0 - areaRadius, cx0 + areaRadius, cz0 - areaRadius, cz0 + areaRadius
+  if opts.bounds then
+    local b = opts.bounds
+    bx1, bx2, bz1, bz2 = b.x1, b.x2, b.z1, b.z2
+    cx0, cz0 = math.floor((bx1 + bx2) / 2), math.floor((bz1 + bz2) / 2)
+  end
 
   stopFn = opts.shouldStop -- let movement abort the moment a stop lands
   stepReport = opts.onMove and function() opts.onMove({ x = state.x, y = state.y, z = state.z }) end or nil
@@ -575,8 +583,8 @@ function M.mineArea(scanFn, areaRadius, opts)
     end
     return t
   end
-  local xs = axis(cx0, cx0 - areaRadius, cx0 + areaRadius)
-  local zs = axis(cz0, cz0 - areaRadius, cz0 + areaRadius)
+  local xs = axis(cx0, bx1, bx2)
+  local zs = axis(cz0, bz1, bz2)
   -- With a centre (the ore's best depth, or a tapped cluster) search one flat
   -- layer there: ore sits in height bands and a far scan sees +-16 up and
   -- down. Without one, search below home.
@@ -596,7 +604,7 @@ function M.mineArea(scanFn, areaRadius, opts)
   local function dist(o) return math.abs(o.x - state.x) + math.abs(o.y - state.y) + math.abs(o.z - state.z) end
   local function homeDist(o) return math.abs(o.x) + math.abs(o.y) + math.abs(o.z) end
   local function inArea(ox, oy, oz)
-    return math.max(math.abs(ox - cx0), math.abs(oy - cy0), math.abs(oz - cz0)) <= areaRadius
+    return ox >= bx1 and ox <= bx2 and oz >= bz1 and oz <= bz2 and math.abs(oy - cy0) <= areaRadius
   end
   -- ore remembered from earlier jobs counts too
   for k, name in pairs(oreMemory) do
@@ -716,8 +724,8 @@ function M.mineArea(scanFn, areaRadius, opts)
 
   -- A point stands for the box of the area around it (+-half). It is explored
   -- once some scan saw all of that box (clipped to the area).
-  local lo = { x = cx0 - areaRadius, y = ylo, z = cz0 - areaRadius }
-  local hi = { x = cx0 + areaRadius, y = yhi, z = cz0 + areaRadius }
+  local lo = { x = bx1, y = ylo, z = bz1 }
+  local hi = { x = bx2, y = yhi, z = bz2 }
   local function explored(p)
     for _, sc in ipairs(scans) do
       local R, all = sc.r or AREA_SCAN_R, true

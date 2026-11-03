@@ -51,6 +51,7 @@ local BASE = {
   ["startup.lua"]    = "base/base.lua",
   ["statusview.lua"] = "common/statusview.lua",
   ["oremap.lua"]     = "common/oremap.lua",
+  ["swarm.lua"]      = "common/swarm.lua",
 }
 
 -- Which files this computer needs, by role: turtles have the global

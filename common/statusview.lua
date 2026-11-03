@@ -130,6 +130,12 @@ local ALLOWED = { scan = { 1, 16, 8 }, harvest = { 1, 24, 12 }, explore = { 1, 2
   mine = { 1, 64, 16 }, stop = false }
 
 local function parseOne(line, turtles)
+  local sr, sore = line:match("DO:%s*swarm%s+(%d+)%s*([%w_]*)")
+  if sr then -- every idle turtle at once, area split between them
+    sr = math.max(1, math.min(48, tonumber(sr)))
+    sore = sore ~= "" and sore or nil
+    return { cmd = "swarm", name = sr, n = sore, line = "swarm " .. sr .. (sore and (" " .. sore) or "") }
+  end
   local vore, vn = line:match("DO:%s*value%s+([%w_]+)%s+(%d+)")
   if vore then -- how much an ore is worth (no turtle involved)
     vn = math.max(1, math.min(100, tonumber(vn)))
