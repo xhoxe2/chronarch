@@ -43,29 +43,35 @@ local SCANNER_ITEM = "advancedperipherals:geo_scanner"
 local state, job = "idle", nil
 local sos -- why the turtle needs help ("low fuel", "stuck away from home"...), or nil
 
--- The turtle's home height (y of the spot by the chest). There is no GPS, so
--- the player tells it once with `sety <name> <y>` on the base; kept in a file.
+-- Where home is in the world (the spot by the chest). With GPS the turtle
+-- finds it by itself; without, the player tells it the height once with
+-- `sety <name> <y>`. Kept in a file as "x y z" (or just "y").
 local HOME_Y_FILE = "/home_y"
-local function loadHomeY()
-  if not fs.exists(HOME_Y_FILE) then return nil end
+local homeX, homeY, homeZ
+local function loadHome()
+  if not fs.exists(HOME_Y_FILE) then return end
   local f = fs.open(HOME_Y_FILE, "r")
-  local y = tonumber(f.readAll())
+  local n = {}
+  for v in f.readAll():gmatch("%-?%d+") do n[#n + 1] = tonumber(v) end
   f.close()
-  return y
+  if #n >= 3 then homeX, homeY, homeZ = n[1], n[2], n[3] elseif n[1] then homeY = n[1] end
 end
-local homeY = loadHomeY()
-local homeX, homeZ -- world x/z of home, known only with GPS
+local function saveHome()
+  local f = fs.open(HOME_Y_FILE, "w")
+  f.write(homeX and ("%d %d %d"):format(homeX, homeY, homeZ) or tostring(homeY))
+  f.close()
+end
+loadHome()
 
--- With a GPS constellation (4 computers running `gps host x y z`) the turtle
--- learns its height by itself; without one this quietly finds nothing.
+-- With a GPS constellation (4 computers running `gps host x y z`) ask where
+-- we are: called at home (start-up, start of a job), so that is home.
+-- Without one this quietly finds nothing.
 local function gpsHomeY()
   if not (gps and gps.locate) then return end
   local x, y, z = gps.locate(1)
   if not y then return end
   homeX, homeY, homeZ = math.floor(x + 0.5), math.floor(y + 0.5), math.floor(z + 0.5)
-  local f = fs.open(HOME_Y_FILE, "w")
-  f.write(tostring(homeY))
-  f.close()
+  saveHome()
 end
 
 -- What the turtle learned on earlier jobs (ore seen, tunnels, scanned spots).
@@ -297,9 +303,7 @@ local function listener()
       proto.send(secret, from, statusBody())
     elseif msg.cmd == "sety" and tonumber(msg.y) then
       homeY = math.floor(tonumber(msg.y))
-      local f = fs.open(HOME_Y_FILE, "w")
-      f.write(tostring(homeY))
-      f.close()
+      saveHome()
       proto.send(secret, from, { type = "log", name = name, text = "home height set to y=" .. homeY })
     elseif msg.cmd == "forget" then
       if fs.exists(MEMORY_FILE) then fs.delete(MEMORY_FILE) end
@@ -366,5 +370,6 @@ local function worker()
 end
 
 print(("CHRONARCH agent '%s' (#%d) online"):format(name, os.getComputerID()))
+gpsHomeY() -- the map then shows world coordinates from the start, like `gps locate`
 proto.broadcast(secret, statusBody())
 parallel.waitForAny(listener, worker)
