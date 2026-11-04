@@ -390,11 +390,13 @@ if learn3:
 
 # where is the screen? The first flight finds the Altitude Sensor (it hangs on a
 # known side of the computer) from how it rises and sinks as the craft leans
-# W flies the way the screen looks. CC: left = front turned counter-clockwise.
-# The real craft: sensor 0.7 west on the left -> screen north -> W north.
-for alt, side, kw, want in [((0.0, -1.0), "left", {}, "north"), ((0.0, 1.0), "left", {}, "south"),
-                            ((0.0, 1.0), "right", {}, "north"), ((1.0, 0.0), "left", {}, "west"),
-                            ((-1.0, 0.0), "back", {}, "south"), ((-1.0, 0.0), "front", {}, "north"),
+# You face the screen: W flies toward the computer's back. CC's left/right are
+# yours when facing the screen. The real craft, read from the world save:
+# computer facing south, Altitude Sensor west = "left", speed sensors north =
+# "back" and east = "right" -> W flies north.
+for alt, side, kw, want in [((0.0, -1.0), "left", {}, "north"), ((0.0, 1.0), "right", {}, "north"),
+                            ((0.0, 1.0), "left", {}, "south"), ((1.0, 0.0), "left", {}, "west"),
+                            ((-1.0, 0.0), "back", {}, "north"), ((-1.0, 0.0), "front", {}, "south"),
                             ((1.0, 0.0), "left", {"rest": (9.6, 0.0), "dist": EDGE}, "west")]:
     sim = Sim(alt=alt, **kw, **REAL)
     c, _ = calibrate(sim)

@@ -8,7 +8,7 @@
 --   pilot info             the report again (also saved to /pilot.txt)
 --   pilot forward flip     W the other way round (180 degrees)
 --   pilot forward north    W flies north (the analysis finds it by itself:
---                          the way the screen looks; this overrides it)
+--                          you face the screen, W = toward the computer's back)
 --   pilot forward auto     back to finding it by itself
 --   pilot relearn          scan the craft again on the next flight
 -- In flight:  W/S forward/back, A/D left/right, Space/Shift up/down,
@@ -245,7 +245,7 @@ if arg == "forward" then
     cal.forwardManual = nil
     cal.forward = cal.learn and cal.learn.forward
     saveCal(cal)
-    print(cal.forward and ("W flies the way the screen looks: " .. cal.forward .. ".")
+    print(cal.forward and ("W flies toward the computer's back: " .. cal.forward .. ".")
       or "The next analysis finds the screen side.")
     return
   end
@@ -302,5 +302,5 @@ local result, learn = flight(cal, height, false)
 term.setCursorPos(1, 8)
 print("Result: " .. tostring(result) .. ". Thrusters off.")
 if learn and learn.forward and not cal.forwardManual and learned(cal) == learn then
-  print("Front found: W flies " .. learn.forward .. " (the way the screen looks).")
+  print("Front found: W flies " .. learn.forward .. " (toward the computer's back).")
 end

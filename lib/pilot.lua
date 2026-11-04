@@ -231,14 +231,16 @@ function P.calibrate(hw)
   return { hover = tips / math.max(n, 1) / P.TIP_PER_HOVER, t = t }
 end
 
--- The way W flies: where the computer's screen looks (the screen side is
--- the craft's front). Found from where the Altitude Sensor sits and on which
--- side of the computer it hangs. CC: left = front turned counter-clockwise,
--- right = clockwise (DirectionUtil.toLocal). nil when it cannot tell (the
--- sensor is near the middle, or above/below the computer).
+-- The way W flies: the pilot looks at the screen, so forward is toward the
+-- computer's back. Found from where the Altitude Sensor sits and on which
+-- side of the computer it hangs. CC's left/right are the pilot's left/right
+-- when facing the screen - checked in the world save: a computer facing south
+-- calls its west neighbour "left", east "right", north "back". nil when it
+-- cannot tell (the sensor is near the middle, or above/below the computer).
 local ORDER = { "north", "east", "south", "west" }
 function P.forwardFrom(alt, side)
-  local turn = ({ front = 0, right = 3, back = 2, left = 1 })[side or ""]
+  -- forward, in quarter turns clockwise from where the sensor sits
+  local turn = ({ back = 0, left = 1, front = 2, right = 3 })[side or ""]
   if not (alt and turn) then return nil end
   local south, east = alt[1], alt[2]
   if math.sqrt(south * south + east * east) < 0.5 then return nil end
