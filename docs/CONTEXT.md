@@ -5,6 +5,7 @@
 ## Сервер и сборка Ascension of Ages
 - Автор WellRareSteak, сборка на CurseForge: https://www.curseforge.com/minecraft/modpacks/ascension-of-ages
 - Публичный репозиторий: https://github.com/andrewgodowsky-aoa/ascension-of-ages-public (там issues с найденными багами)
+- Список модов из присланного `mods.zip` (2026-11-04) — `docs/aoa-mods.txt`: ~540 jar. Есть Create 6.0.10 (+ Aeronautics, Sable, New Age, Railways), PneumaticCraft: Repressurized 8.2.23, Mekanism 10.7.19, AE2 19.2.17, Refined Storage 2.0.9, Integrated Dynamics 1.35, Immersive Engineering, Modern Industrialization, Oritech. **Нет CC: Tweaked и Advanced Peripherals.** Jar MineColonies в архиве нет (остался только `jadecolonies`).
 - v0.7.4.0: NeoForge 21.1.248, Minecraft 1.21.1, 594 мода, рекомендуемая RAM 10 ГБ.
 - 8 эпох (стадии AStages): `dark_ages` → `medieval_times` → `the_renaissance` → `industrial_revolution` → `gilded_age` → `atomic` → `otherworldly` → `ascension`.
 - Гейтинг предметов по эпохам задаётся в `overrides/kubejs/server_scripts/aoa_astages_*.js` (тысячи записей вида `["gilded_age", "pneumaticcraft:programmer", "block_item"]`).
