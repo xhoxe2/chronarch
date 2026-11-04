@@ -6,8 +6,9 @@
 --   pilot                  fly: take off to +4, keys work at once
 --   pilot 8                fly to +8
 --   pilot info             the report again (also saved to /pilot.txt)
---   pilot forward north    which way W flies (the first flight finds it by
---                          itself: away from the screen; this overrides it)
+--   pilot forward flip     W the other way round (180 degrees)
+--   pilot forward north    W flies north (the analysis finds it by itself:
+--                          the way the screen looks; this overrides it)
 --   pilot forward auto     back to finding it by itself
 --   pilot relearn          scan the craft again on the next flight
 -- In flight:  W/S forward/back, A/D left/right, Space/Shift up/down,
@@ -244,11 +245,15 @@ if arg == "forward" then
     cal.forwardManual = nil
     cal.forward = cal.learn and cal.learn.forward
     saveCal(cal)
-    print(cal.forward and ("W flies away from the screen: " .. cal.forward .. ".")
-      or "The next flight finds the screen side.")
+    print(cal.forward and ("W flies the way the screen looks: " .. cal.forward .. ".")
+      or "The next analysis finds the screen side.")
     return
   end
-  if not P.COMPASS[arg2 or ""] then print("pilot forward north|east|south|west|auto"); return end
+  if arg2 == "flip" and cal.forward then
+    local back = { north = "south", south = "north", east = "west", west = "east" }
+    arg2 = back[cal.forward]
+  end
+  if not P.COMPASS[arg2 or ""] then print("pilot forward flip|north|east|south|west|auto"); return end
   cal.forward, cal.forwardManual = arg2, true
   saveCal(cal)
   print("W now flies " .. arg2 .. ". (pilot forward auto: undo)")
@@ -297,5 +302,5 @@ local result, learn = flight(cal, height, false)
 term.setCursorPos(1, 8)
 print("Result: " .. tostring(result) .. ". Thrusters off.")
 if learn and learn.forward and not cal.forwardManual and learned(cal) == learn then
-  print("Front found: W flies " .. learn.forward .. " (away from the screen).")
+  print("Front found: W flies " .. learn.forward .. " (the way the screen looks).")
 end

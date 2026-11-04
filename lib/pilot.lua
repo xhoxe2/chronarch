@@ -231,13 +231,14 @@ function P.calibrate(hw)
   return { hover = tips / math.max(n, 1) / P.TIP_PER_HOVER, t = t }
 end
 
--- The way W flies, from where the Altitude Sensor sits and on which side of
--- the computer (its peripheral side). The pilot faces the screen, so forward
--- is opposite to where the screen looks. nil when it cannot tell (the sensor
--- is near the middle, or above/below the computer).
+-- The way W flies: where the computer's screen looks (the screen side is
+-- the craft's front). Found from where the Altitude Sensor sits and on which
+-- side of the computer it hangs. CC: left = front turned counter-clockwise,
+-- right = clockwise (DirectionUtil.toLocal). nil when it cannot tell (the
+-- sensor is near the middle, or above/below the computer).
 local ORDER = { "north", "east", "south", "west" }
 function P.forwardFrom(alt, side)
-  local turn = ({ front = 2, right = 1, back = 0, left = 3 })[side or ""]
+  local turn = ({ front = 0, right = 3, back = 2, left = 1 })[side or ""]
   if not (alt and turn) then return nil end
   local south, east = alt[1], alt[2]
   if math.sqrt(south * south + east * east) < 0.5 then return nil end
@@ -585,7 +586,8 @@ function P.fly(hw, cal, opts)
     local X, Y, r = {}, {}, math.pi / 180
     for k = 1, 2 do
       for _, p in ipairs(moveData[k]) do
-        local row = { 0, 0, 0, 0, 0, 0, -math.sin(p.a * r), -math.sin(p.b * r) }
+        -- Q: the lift really applied (thrust steps round differently as it leans)
+        local row = { 0, 0, 0, 0, 0, 0, -math.sin(p.a * r), -math.sin(p.b * r), p.Q }
         row[k], row[k + 2], row[k + 4] = 1, p.t, p.t * p.t
         X[#X + 1] = row
         Y[#Y + 1] = p.y
@@ -924,7 +926,14 @@ function P.fly(hw, cal, opts)
       return fs
     end
     local fs = makeFs(base, tau[1], tau[2])
-    if T and (T.name == "lift" or tests[T.name].lifter) then
+    if T and (T.name == "m1" or T.name == "m2") then
+      -- lift really applied, against its first step: for locating the sensor
+      local v = 0
+      for _, i in ipairs(lifters) do v = v + P.real(fs[i]) / h end
+      v = v / #lifters
+      T.u0 = T.u0 or v
+      T.u = v - T.u0
+    elseif T and (T.name == "lift" or tests[T.name].lifter) then
       -- the push really applied: thrust after the steps, with minus without the test
       local j = tests[T.name].lifter
       if j then

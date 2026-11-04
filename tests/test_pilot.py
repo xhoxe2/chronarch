@@ -47,7 +47,7 @@ class Sim:
 
     def __init__(self, K=100.0, grav=9.8, hov=0.05, tau=0.0, dist=(0.0, 0.0), layout="plus", side=(),
                  perm=None, swap=False, flip=(1, 1), dead=None, sensors=((-1, 0), (0, 1)), ground=66.5,
-                 events=(), held=(), limit=150.0, mu=0.6, alt=(0.0, 1.0), rest=(0.0, 0.0), edge=3.0):
+                 events=(), held=(), limit=150.0, mu=0.6, alt=(0.0, -1.0), rest=(0.0, 0.0), edge=3.0):
         self.K, self.grav, self.hov, self.tau, self.dist = K, grav, hov, tau, dist
         self.lifters = LAYOUTS[layout]
         self.side = list(side)
@@ -390,9 +390,12 @@ if learn3:
 
 # where is the screen? The first flight finds the Altitude Sensor (it hangs on a
 # known side of the computer) from how it rises and sinks as the craft leans
-for alt, side, kw, want in [((0.0, 1.0), "left", {}, "north"), ((0.0, 1.0), "right", {}, "south"),
-                            ((1.0, 0.0), "left", {}, "east"), ((-1.0, 0.0), "back", {}, "north"),
-                            ((1.0, 0.0), "left", {"rest": (9.6, 0.0), "dist": EDGE}, "east")]:
+# W flies the way the screen looks. CC: left = front turned counter-clockwise.
+# The real craft: sensor 0.7 west on the left -> screen north -> W north.
+for alt, side, kw, want in [((0.0, -1.0), "left", {}, "north"), ((0.0, 1.0), "left", {}, "south"),
+                            ((0.0, 1.0), "right", {}, "north"), ((1.0, 0.0), "left", {}, "west"),
+                            ((-1.0, 0.0), "back", {}, "south"), ((-1.0, 0.0), "front", {}, "north"),
+                            ((1.0, 0.0), "left", {"rest": (9.6, 0.0), "dist": EDGE}, "west")]:
     sim = Sim(alt=alt, **kw, **REAL)
     c, _ = calibrate(sim)
     t0 = sim.t
@@ -479,7 +482,7 @@ for name, kw in [("heavy to turn (K 40)", {"K": 40.0, "hov": 0.0137, "dist": EDG
                  ("weak thrusters (hover 20%)", {"hov": 0.2, "K": 120.0, "dist": EDGE}),
                  ("names shuffled, gimbal axes swapped and flipped",
                   {"perm": (2, 0, 3, 1), "swap": True, "flip": (-1, 1), "dist": EDGE, **REAL})]:
-    first_flight(name, Sim(**kw), tilt_ok=16.0, calm_ok=3.0)
+    first_flight(name, Sim(**kw), tilt_ok=16.0, calm_ok=3.0, hold_ok=1.5)
 
 # heavier than calibrated: the hover it learns in the air wins
 sim = Sim(**REAL)
@@ -716,17 +719,17 @@ check("program: Ctrl+T -> all thrusters off", any("Terminated" in l for l in out
 t0 = sim.t
 out = run_program(sim, files, events=[(t0 + 15, "key", "q", False)], arg="go")
 check("program: any other key -> all off", any("stopped" in l for l in out) and all(c == 0 for c in sim.cmd), out)
-# the computer turned the other way (screen west): calibrate finds it, W flies east
-sim3 = Sim(alt=(1.0, 0.0), **REAL)  # Altitude Sensor on the computer's left = south of the middle
+# the computer turned another way: sensor south of the middle on its left -> screen west
+sim3 = Sim(alt=(1.0, 0.0), **REAL)
 files3 = lua.table_from({})
 out3 = run_program(sim3, files3, arg="calibrate")
-check("program: calibrate finds the screen side by itself", any("W flies east" in l for l in out3), out3)
+check("program: calibrate finds the screen side by itself", any("W flies west" in l for l in out3), out3)
 t0 = sim3.t
 w = [(t0 + 15, "key", "w", False)] + [(t0 + 15.3 + 0.3 * i, "key", "w", True) for i in range(16)] + \
     [(t0 + 20, "key_up", "w", False), (t0 + 35, "key", "l", False)]
 out3 = run_program(sim3, files3, events=w, arg="go")
-east = sim3.after(t0, 21)[6] - sim3.after(t0, 15)[6]
-check("program: ... and on the next flight W flies east", east > 4, (east, out3))
+west = -(sim3.after(t0, 21)[6] - sim3.after(t0, 15)[6])
+check("program: ... and on the next flight W flies west", west > 4, (west, out3))
 
 # re-assembled: thruster names changed
 sim2 = Sim(**REAL)
