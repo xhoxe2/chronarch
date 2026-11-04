@@ -66,13 +66,14 @@ local PROGRAMS = {
   },
   pilot = {
     needs = "computer", files = { "pilot.lua" }, libs = { "pilot" },
-    about = "autopilot of a flying platform (Aeronautics)",
+    about = "autopilot: learns any craft, WASD flight",
     run = "pilot calibrate, then pilot",
     help = {
-      "On the platform's computer:",
+      "On the craft's computer:",
       " pilot calibrate   once, on its legs",
-      " pilot [height]    take off and hover",
-      "In flight: Up/Down height, L land,",
+      " pilot [height]    take off (1st: scan)",
+      " pilot forward north   W direction",
+      "Fly: WASD, Space/Shift, L land,",
       " any other key = all thrusters off",
     },
   },

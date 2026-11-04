@@ -1,32 +1,59 @@
--- CHRONARCH :: lib/pilot.lua  - autopilot for a Create Aeronautics platform
+-- CHRONARCH :: lib/pilot.lua  - autopilot that learns the craft it sits on
+--
+-- Nothing is assumed about the craft. On the ground `calibrate` fires each
+-- thruster alone and watches what it does (tips which edge, lifts, pushes
+-- sideways). In the air `fly` runs a short scan - small test pushes - and
+-- measures how hard each control actually turns, lifts and moves the craft;
+-- the gains come from those measurements, so a heavy barge and a light
+-- drone both fly. The scan results are returned to be saved and reused.
 --
 -- Hardware comes in as `hw`, so the same code runs in the game and in the
 -- physics model of the tests:
---   hw.n                 number of thrusters (all pointing up)
---   hw.read()  -> ax, az, y   Gimbal Sensor angles (degrees) + Altitude Sensor
---   hw.write(fs)         thrust per thruster, fraction 0..0.99 of maximum
---   hw.wait(s)           sleep
---   hw.clock()           seconds
---   hw.poll()  -> nil | "up" | "down" | "land" | "kill"
---   hw.show(state)       optional: draw the status
+--   hw.n                   number of thrusters
+--   hw.read() -> { a, b, y, v = {...} }  Gimbal Sensor X/Z (degrees),
+--                          Altitude Sensor y, Velocity Sensor readings
+--   hw.write(fs)           thrust per thruster, fraction 0..0.99 of maximum
+--   hw.wait(s), hw.clock() sleep / seconds
+--   hw.poll() -> nil | "up" | "down" | "land" | "kill"
+--   hw.held() -> { f = -1|0|1, r = -1|0|1, u = -1|0|1 }  keys held now:
+--                          forward/back, right/left, rise/sink (optional)
+--   hw.show(state)         optional: draw the status
 --
--- Nothing assumes where each thruster stands: `calibrate` fires them one at a
--- time with the platform on its legs and watches which way it tips.
+-- Directions: Gimbal X > 0 = south edge lower, Z > 0 = east edge lower (in
+-- the craft's frame as it was assembled). A craft tilted toward a side is
+-- pushed to that side, which is how the scan finds what each Velocity
+-- Sensor measures.
 
 local P = {}
 
-P.TILT_CUT = 30 -- degrees: past this every thruster goes off
-P.DT = 0.05     -- extra sleep per control step (reading/writing takes ticks too)
--- Gains, in "hover thrust" units: tilt per degree (tp), per degree/s (td),
--- per degree*s (ti); height per block (hp), per block/s (hd), per block*s (hi).
--- Tuned in tests/test_pilot.py: tilt for the inertia measured in the first
--- flight log (K ~100..150, survives 40..250), height over gravity 9.8..32,
--- hover guessed -30..+30%, a player at the edge.
-P.GAINS = { tp = 0.01, td = 0.01, ti = 0.006, hp = 0.07, hd = 0.05, hi = 0.02 }
-P.TIP_PER_HOVER = 2.5 -- first flight: an edge lifted at 3.5%, hover was 1.37% each
+P.TILT_CUT = 30   -- degrees: past this every thruster goes off
+P.DT = 0.05       -- extra sleep per control step (reading/writing takes ticks too)
 P.MAX_HEIGHT = 30
-P.CLIMB = 0.6   -- blocks/s, how fast the target height moves
+P.CLIMB = 0.6     -- blocks/s, target height speed (and Space/Shift)
 P.DESCEND = 0.35
+P.SPEED = 4       -- blocks/s with W/A/S/D
+P.MAX_TILT = 12   -- degrees the craft may lean to move (and brake)
+P.TILT_RATE = 15  -- degrees/s: the wanted lean changes no faster (no jolts)
+P.TIP_PER_HOVER = 2.5 -- first flight: an edge lifted at 3.5%, hover was 1.37% each
+-- Tilt loop: bandwidth (rad/s) and damping. Before the scan the craft's turn
+-- rate K (deg/s^2 per unit of torque, in hover units) is guessed; this guess
+-- flew in the model for K 40..250. After the scan K is measured and the
+-- bandwidth follows the real control step: faster loop, stiffer control.
+P.K_GUESS, P.W_PRIOR, P.ZETA, P.TI = 120, 1.55, 0.77, 4.0
+P.TI_PRIOR = 1.7  -- before the scan: level out a player's weight faster
+P.W_FACTOR = 0.35 -- after the scan: bandwidth = this / (control step + sensor lag)
+P.RATE_F = 0.8    -- weight of the newest sample in the turn-rate estimate
+-- Height loop (hover units per block, per block/s, per block*s), for g = 9.8;
+-- scaled by the gravity the scan measures.
+P.HP, P.HD, P.HI = 0.07, 0.05, 0.02
+P.VEL_K = 0.8     -- 1/s: how fast speed follows the keys
+P.POS_K = 0.15    -- 1/s: pulls back to where you stopped
+P.LAG = 0.05      -- sensor values are about a tick old
+
+P.COMPASS = { -- forward and right as (south, east)
+  north = { f = { -1, 0 }, r = { 0, 1 } }, east = { f = { 0, 1 }, r = { 1, 0 } },
+  south = { f = { 1, 0 }, r = { 0, -1 } }, west = { f = { 0, -1 }, r = { -1, 0 } },
+}
 
 -- Thrust fraction -> setPower (1..15) and setThrustConfig (0..99).
 -- From the Create Propulsion code: thrust = (config+1)/100 * maximum *
@@ -40,22 +67,122 @@ function P.knobs(f)
   return p, c
 end
 
+-- the thrust a fraction really gives after the knobs' steps
+function P.real(f)
+  local p, c = P.knobs(f)
+  return p > 0 and (c + 1) / 100 * p / 15 or 0
+end
+
 local function zeros(n) local z = {} for i = 1, n do z[i] = 0 end return z end
 function P.cut(hw) hw.write(zeros(hw.n)) end
-
 local function clamp(v, lo, hi) if v < lo then return lo elseif v > hi then return hi end return v end
 
--- Fire each thruster alone, growing slowly, until the platform tips 1 degree.
--- Returns { hover = f, t = { {axis=1|2, sign=+1|-1, tip=f}, ... } } or nil, why.
--- sign: firing it makes that angle grow. Hover is guessed from the tipping
--- point: an edge thruster lifts its edge at P.TIP_PER_HOVER times its share
--- of the hover thrust (2 on paper, 2.5 measured: the legs stand at the corners).
+-- Small linear algebra ------------------------------------------------------
+
+-- Solve A x = b (n x n), Gaussian elimination with pivoting; nil if singular.
+function P.solve(A, b)
+  local n, M = #b, {}
+  for i = 1, n do
+    M[i] = {}
+    for j = 1, n do M[i][j] = A[i][j] end
+    M[i][n + 1] = b[i]
+  end
+  for c = 1, n do
+    local p = c
+    for r = c + 1, n do if math.abs(M[r][c]) > math.abs(M[p][c]) then p = r end end
+    if math.abs(M[p][c]) < 1e-12 then return nil end
+    M[c], M[p] = M[p], M[c]
+    for r = 1, n do
+      if r ~= c then
+        local k = M[r][c] / M[c][c]
+        for j = c, n + 1 do M[r][j] = M[r][j] - k * M[c][j] end
+      end
+    end
+  end
+  local x = {}
+  for i = 1, n do x[i] = M[i][n + 1] / M[i][i] end
+  return x
+end
+
+-- Least squares: rows X[r] (features), values y[r] -> coefficients or nil.
+function P.lsq(X, y)
+  if #X == 0 then return nil end
+  local k, A, b = #X[1], {}, {}
+  for i = 1, k do A[i] = {} for j = 1, k do A[i][j] = 0 end b[i] = 0 end
+  for r = 1, #X do
+    for i = 1, k do
+      b[i] = b[i] + X[r][i] * y[r]
+      for j = 1, k do A[i][j] = A[i][j] + X[r][i] * X[r][j] end
+    end
+  end
+  return P.solve(A, b)
+end
+
+local function inv2(M)
+  local d = M[1][1] * M[2][2] - M[1][2] * M[2][1]
+  if math.abs(d) < 1e-9 then return nil end
+  return { { M[2][2] / d, -M[1][2] / d }, { -M[2][1] / d, M[1][1] / d } }
+end
+
+-- How to share a torque among the lifting thrusters: the least change of
+-- thrust that gives torque (1, 0) or (0, 1) without changing the total lift.
+-- c1/c2 of each lifter = which way it tips the craft (from `calibrate`).
+-- Returns D1, D2: per-thruster change for a unit torque on each axis.
+function P.mixer(cal)
+  local L = {}
+  for i, x in ipairs(cal.t) do if x.kind == "lift" then L[#L + 1] = i end end
+  local C = { {}, {}, {} }
+  for k, i in ipairs(L) do C[1][k] = 1; C[2][k] = cal.t[i].c1; C[3][k] = cal.t[i].c2 end
+  local G = {}
+  for r = 1, 3 do
+    G[r] = {}
+    for s = 1, 3 do
+      local v = 0
+      for k = 1, #L do v = v + C[r][k] * C[s][k] end
+      G[r][s] = v + (r == s and 1e-6 or 0)
+    end
+  end
+  local D1, D2 = zeros(#cal.t), zeros(#cal.t)
+  for axis, D in ipairs({ D1, D2 }) do
+    local d = { 0, 0, 0 }
+    d[axis + 1] = 1
+    local y = P.solve(G, d) or { 0, 0, 0 }
+    for k, i in ipairs(L) do D[i] = C[1][k] * y[1] + C[2][k] * y[2] + C[3][k] * y[3] end
+  end
+  return D1, D2
+end
+
+-- Ground scan ------------------------------------------------------------------
+
+-- Fire each thruster alone, growing slowly, until something happens:
+--   the craft tips 1 degree   -> "lift", c1/c2 = which way it tips
+--   the craft rises            -> "lift" through the middle (c1 = c2 = 0)
+--   a Velocity Sensor moves    -> "side": it pushes sideways
+--   nothing up to full power   -> "none" (points down, or is dead)
+-- Returns { hover, t = { {kind, c1, c2, tip}, ... } } or nil, why.
+-- wait until the craft stops moving on its legs (a slow one takes a while)
+local function settle(hw)
+  P.cut(hw)
+  hw.wait(1)
+  local last, calm = hw.read(), 0
+  for _ = 1, 40 do
+    hw.wait(0.5)
+    local s = hw.read()
+    if math.abs(s.a - last.a) < 0.05 and math.abs(s.b - last.b) < 0.05 and math.abs(s.y - last.y) < 0.02 then
+      calm = calm + 1
+      if calm >= 2 then return s end
+    else
+      calm = 0
+    end
+    last = s
+  end
+  return last
+end
+
 function P.calibrate(hw)
-  local t, tips = {}, 0
+  local t, tips, n = {}, 0, 0
   for i = 1, hw.n do
-    P.cut(hw)
-    hw.wait(2) -- settle on the legs
-    local a0, b0, y0 = hw.read()
+    local s0 = settle(hw)
     local f, got = 0.0007, nil
     while f < 0.99 and not got do
       if hw.poll() == "kill" then P.cut(hw); return nil, "stopped" end
@@ -63,104 +190,473 @@ function P.calibrate(hw)
       fs[i] = f
       hw.write(fs)
       hw.wait(0.25)
-      local a, b, y = hw.read()
-      local d1, d2 = a - a0, b - b0
-      if math.max(math.abs(d1), math.abs(d2)) > 1 then
-        local axis = math.abs(d1) >= math.abs(d2) and 1 or 2
-        local d = axis == 1 and d1 or d2
-        got = { axis = axis, sign = d > 0 and 1 or -1, tip = f }
-      elseif y - y0 > 0.5 then
-        break -- the whole platform rose: this thruster says nothing about tilt
+      local s = hw.read()
+      local d1, d2 = s.a - s0.a, s.b - s0.b
+      local m = math.max(math.abs(d1), math.abs(d2))
+      local moved = 0
+      for k = 1, #s.v do moved = math.max(moved, math.abs(s.v[k] - (s0.v[k] or 0))) end
+      if m > 1 then
+        got = { kind = "lift", c1 = d1 / m, c2 = d2 / m, tip = f }
+        tips, n = tips + f, n + 1
+      elseif s.y - s0.y > 0.3 then -- rose whole; a slow craft may still lean a little
+        if m > 0.2 then got = { kind = "lift", c1 = d1 / m, c2 = d2 / m, tip = f / 1.6 }
+        else got = { kind = "lift", c1 = 0, c2 = 0, tip = f } end
+        if m > 0.2 then tips, n = tips + got.tip, n + 1 end
+      elseif moved > 0.3 then
+        got = { kind = "side", tip = f }
       end
       f = f * 1.15
     end
     P.cut(hw)
-    if not got then return nil, ("thruster %d did not tip the platform"):format(i) end
-    t[i] = got
-    tips = tips + got.tip
+    t[i] = got or { kind = "none" }
   end
   for axis = 1, 2 do
     local plus, minus = false, false
     for _, x in ipairs(t) do
-      if x.axis == axis then plus = plus or x.sign > 0; minus = minus or x.sign < 0 end
+      local c = x.kind == "lift" and (axis == 1 and x.c1 or x.c2) or 0
+      plus = plus or c > 0.4
+      minus = minus or c < -0.4
     end
     if not (plus and minus) then
-      return nil, ("axis %d has no thruster on one side"):format(axis)
+      return nil, ("cannot level axis %d: no thruster lifts one of its sides"):format(axis)
     end
   end
-  hw.wait(2)
-  return { hover = tips / hw.n / P.TIP_PER_HOVER, t = t }
+  settle(hw)
+  return { hover = tips / math.max(n, 1) / P.TIP_PER_HOVER, t = t }
 end
 
--- Take off to `opts.height` blocks above the start, hold level and height,
--- land on "land". Returns "landed", "stopped" (kill key) or "tilt" (safety cut).
+-- Flight ---------------------------------------------------------------------
+
+-- double integral of a +1 / -1 doublet (each half T long), from 0
+local function doublet(t, T)
+  if t <= 0 then return 0 elseif t < T then return t * t / 2 end
+  local s = t - T
+  if s < T then return T * T / 2 + T * s - s * s / 2 end
+  return T * T
+end
+local function square(t, T) if t < 0 then return 0 elseif t < T then return 1 elseif t < 2 * T then return -1 end return 0 end
+
+-- slope of v over samples with t in [t0, t1); also the mean of `a`
+local function slope(data, key, i, t0, t1)
+  local X, Y, am, n = {}, {}, 0, 0
+  for _, d in ipairs(data) do
+    if d.t >= t0 and d.t < t1 then
+      X[#X + 1] = { 1, d.t }
+      Y[#Y + 1] = i and d[key][i] or d[key]
+      am, n = am + (d.ang or 0), n + 1
+    end
+  end
+  local c = #X >= 3 and P.lsq(X, Y)
+  return c and c[2], n > 0 and am / n or 0
+end
+
+-- Take off to `opts.height` blocks above the start, learn the craft (once),
+-- then hold height, level and position; W/A/S/D move, Space/Shift climb/sink.
+-- Returns result ("landed" | "stopped" | "tilt"), learn (what the scan found).
 function P.fly(hw, cal, opts)
   opts = opts or {}
-  local g = opts.gains or P.GAINS
-  local h = cal.hover
-  local a, b, y = hw.read()
-  local ground = y
+  local learn = {}
+  for k, v in pairs(cal.learn or {}) do learn[k] = v end
+  local h = learn.hover or cal.hover
+  local G = learn.G or 9.8
+  local K = { learn.k1 or P.K_GUESS, learn.k2 or P.K_GUESS }
+  local w = P.W_PRIOR
+  local Minv = learn.M and inv2(learn.M)
+  local gk = G * math.pi / 180 -- blocks/s^2 per degree of lean
+  if learn.M then
+    local c1 = math.sqrt(learn.M[1][1] ^ 2 + learn.M[2][1] ^ 2)
+    local c2 = math.sqrt(learn.M[1][2] ^ 2 + learn.M[2][2] ^ 2)
+    gk = (c1 + c2) / 2
+  end
+  local side = learn.side or {} -- [i] = { s, e }: push per unit thrust (blocks/s^2)
+  local dirs = P.COMPASS[opts.forward or "north"] or P.COMPASS.north
+  local D1, D2 = P.mixer(cal)
+  local isLift = {}
+  for i, x in ipairs(cal.t) do isLift[i] = x.kind == "lift" end
+
+  local s = hw.read()
+  local ground = s.y
   local goal = ground + math.min(P.MAX_HEIGHT, opts.height or 4)
   local target = ground
-  local I, Ia, Ib = -0.3, 0, 0 -- start under the guessed hover: lift off gently
+  local I = -0.3 -- start under the guessed hover: lift off gently
+  local Ia, Ib = 0, 0
   local vy, wa, wb = 0, 0, 0
+  local a, b, y = s.a, s.b, s.y
   local landing, still = false, 0
   local t = hw.clock()
-  local nextShow = 0
+  local nextShow, dtAvg = 0, 0.1
+  local pS, pE, tS, tE = 0, 0, 0, 0 -- position (from the speed sensors) and where to hold
+  local moving = false
+  local spPrev = { 0, 0 }
+  local settled, baseSum, baseN = 0, 0, 0
+  local queue, T = nil, nil -- scan tests still to run, the running one
+  local scanned = learn.k1 ~= nil or opts.noscan
+
+  local function hp() return P.HP * 9.8 / G end
+  local function hd() return P.HD * 9.8 / G end
+  local function hi() return P.HI * 9.8 / G end
+
+  -- what each test does and how long; analyse() fills `learn`
+  local tests = {}
+  local function startTest(name, amp)
+    T = { name = name, t0 = nil, amp = amp, data = {}, tries = (T and T.name == name) and T.tries + 1 or 0,
+          u = 0, vI = 0, qI = 0 }
+  end
+  local function nextTest()
+    T = nil
+    local name = table.remove(queue, 1)
+    if name then startTest(name, tests[name].amp) end
+  end
+
+  -- Tests that push and watch: value = c0 + c1 t + c2 t^2 + coef * Q, where Q
+  -- is the double integral of the push really applied (after the thrust
+  -- steps), and t^2 soaks up any steady push that is not the test's (a
+  -- player at the edge). Returns coef and how much the push moved things.
+  local function fitPush(d, key)
+    local X, Y, qmax = {}, {}, 0
+    for _, p in ipairs(d) do
+      X[#X + 1] = { 1, p.t, p.t * p.t, p.Q }
+      Y[#Y + 1] = p[key]
+      qmax = math.max(qmax, math.abs(p.Q))
+    end
+    local c = #X >= 6 and P.lsq(X, Y)
+    if not c then return nil, 0 end
+    return c[4], math.abs(c[4] * qmax)
+  end
+  tests.lift = { half = 0.5, dur = 1.4, analyse = function(d)
+    local g, seen = fitPush(d, "y")
+    if not g then return true end
+    if seen < 0.05 then return false end -- too small to see: push harder
+    if g > 2 and g < 60 then learn.G = g; G = g; gk = g * math.pi / 180 end
+    return true
+  end }
+  local function tiltTest(axis)
+    return { half = 0.3, dur = 1.0, axis = axis, analyse = function(d)
+      local k, seen = fitPush(d, "ang")
+      if not k then return true end
+      if seen < 0.4 then return false end
+      if k > 5 and k < 5000 then learn["k" .. axis] = k; K[axis] = k end
+      return true
+    end }
+  end
+  tests.k1, tests.k2 = tiltTest(1), tiltTest(2)
+  -- Lean one way, then the other, on each axis; meanwhile record both lean
+  -- angles and every speed sensor. Each sensor's speed changes by
+  -- M[i][1] * lean X + M[i][2] * lean Z per second: fitted over both tests at
+  -- once, so a lean the test did not ask for (a player at the edge) does not
+  -- fool it.
+  local moveData = {}
+  local function fitM()
+    local M = { {}, {} }
+    for i = 1, 2 do
+      local X, Y = {}, {}
+      for k = 1, 2 do
+        local d, i1, i2 = moveData[k], 0, 0
+        for j, p in ipairs(d) do
+          if j > 1 then
+            local dt2 = p.t - d[j - 1].t
+            i1 = i1 + 0.5 * (p.a + d[j - 1].a) * dt2
+            i2 = i2 + 0.5 * (p.b + d[j - 1].b) * dt2
+          end
+          X[#X + 1] = { k == 1 and 1 or 0, k == 2 and 1 or 0, k == 1 and p.t or 0, k == 2 and p.t or 0, i1, i2 }
+          Y[#Y + 1] = p.v[i]
+        end
+      end
+      local c = P.lsq(X, Y)
+      if not c then return nil end
+      M[i][1], M[i][2] = c[5], c[6]
+    end
+    return M
+  end
+  local function moveTest(axis)
+    return { amp = 3, dur = 3.4, analyse = function(d)
+      moveData[axis] = d
+      if axis == 2 and moveData[1] then
+        local M = fitM()
+        if M and inv2(M) then
+          learn.M, Minv = M, inv2(M)
+          gk = (math.sqrt(M[1][1] ^ 2 + M[2][1] ^ 2) + math.sqrt(M[1][2] ^ 2 + M[2][2] ^ 2)) / 2
+        end
+      end
+      return true
+    end }
+  end
+  tests.m1, tests.m2 = moveTest(1), moveTest(2)
+  -- Fire one side thruster (it needs 0.5 s to spin up, so the push is held
+  -- long) and compare how the speed changes before and during it. Whatever
+  -- the craft's own lean does to the speed (M) is taken out first.
+  local function sideTest(i) -- first push: half of one lifter's hover thrust
+    return { amp = 0.5 * h, dur = 2.2, thruster = i, analyse = function(d)
+      if not (Minv and learn.M) then return true end
+      local M, i1, i2, prev = learn.M, 0, 0, nil
+      for _, p in ipairs(d) do
+        if prev then
+          i1 = i1 + 0.5 * (p.a + prev.a) * (p.t - prev.t)
+          i2 = i2 + 0.5 * (p.b + prev.b) * (p.t - prev.t)
+        end
+        p.r = { p.v[1] - M[1][1] * i1 - M[1][2] * i2, p.v[2] - M[2][1] * i1 - M[2][2] * i2 }
+        prev = p
+      end
+      local da = {}
+      for k = 1, 2 do
+        local s1 = slope(d, "r", k, 0.2, 0.8)
+        local s2 = slope(d, "r", k, 1.5, 2.2)
+        if not (s1 and s2) then return true end
+        da[k] = s2 - s1
+      end
+      local aS = gk * (Minv[1][1] * da[1] + Minv[1][2] * da[2])
+      local aE = gk * (Minv[2][1] * da[1] + Minv[2][2] * da[2])
+      if math.sqrt(aS * aS + aE * aE) < 0.15 then return false end -- too weak to see: harder
+      side[i] = { aS / T.amp, aE / T.amp }
+      learn.side = side
+      return true
+    end }
+  end
+
+  local function buildScan()
+    -- pushes of at least 2 thrust steps, or the steps would hide them
+    local step, dmax = 2 / 1500 / h, { 0, 0 }
+    for i = 1, hw.n do dmax[1] = math.max(dmax[1], math.abs(D1[i])); dmax[2] = math.max(dmax[2], math.abs(D2[i])) end
+    tests.lift.amp = math.max(0.15, step)
+    tests.k1.amp = math.max(0.05, step / math.max(dmax[1], 0.1))
+    tests.k2.amp = math.max(0.05, step / math.max(dmax[2], 0.1))
+    -- speed sensors first: until then nothing stops the craft drifting
+    queue = {}
+    if #s.v >= 2 then queue = { "m1", "m2" } end
+    queue[#queue + 1] = "lift"; queue[#queue + 1] = "k1"; queue[#queue + 1] = "k2"
+    if #s.v >= 2 then
+      for i, x in ipairs(cal.t) do
+        if x.kind ~= "lift" then
+          tests["side" .. i] = sideTest(i)
+          queue[#queue + 1] = "side" .. i
+        end
+      end
+    end
+    nextTest()
+  end
+
+  local function retune()
+    local D = dtAvg + P.LAG
+    w = clamp(P.W_FACTOR / D, 0.8, 2.2)
+  end
+
+  -- share a horizontal push (south, east; blocks/s^2) among side thrusters,
+  -- return their thrusts and what is left for leaning
+  local function sideShare(aS, aE)
+    local u, L = {}, 0
+    for _, v in pairs(side) do L = L + v[1] * v[1] + v[2] * v[2] end
+    if L == 0 then return u, aS, aE end
+    for i in pairs(side) do u[i] = 0 end
+    for _ = 1, 30 do
+      local rS, rE = aS, aE
+      for i, v in pairs(side) do rS = rS - v[1] * u[i]; rE = rE - v[2] * u[i] end
+      for i, v in pairs(side) do u[i] = clamp(u[i] + (v[1] * rS + v[2] * rE) / L, 0, 0.99) end
+    end
+    for i, v in pairs(side) do aS = aS - v[1] * u[i]; aE = aE - v[2] * u[i] end
+    return u, aS, aE
+  end
+
   while true do
     local cmd = hw.poll()
-    if cmd == "kill" then P.cut(hw); return "stopped" end
+    if cmd == "kill" then P.cut(hw); return "stopped", learn end
     if cmd == "up" then goal = math.min(ground + P.MAX_HEIGHT, goal + 1)
     elseif cmd == "down" then goal = math.max(ground + 1, goal - 1)
-    elseif cmd == "land" then landing = true end
+    elseif cmd == "land" then landing = true; T = nil; queue = {} end
+    local held = hw.held and hw.held() or {}
 
-    local na, nb, ny = hw.read()
+    s = hw.read()
     local now = hw.clock()
     local dt = math.max(now - t, 0.01)
     t = now
-    if math.abs(na) > P.TILT_CUT or math.abs(nb) > P.TILT_CUT then P.cut(hw); return "tilt" end
-    vy = 0.5 * vy + 0.5 * (ny - y) / dt
-    wa = 0.5 * wa + 0.5 * (na - a) / dt
-    wb = 0.5 * wb + 0.5 * (nb - b) / dt
-    a, b, y = na, nb, ny
+    dtAvg = 0.95 * dtAvg + 0.05 * dt
+    if learn.k2 then retune() end
+    if math.abs(s.a) > P.TILT_CUT or math.abs(s.b) > P.TILT_CUT then P.cut(hw); return "tilt", learn end
+    vy = 0.5 * vy + 0.5 * (s.y - y) / dt
+    wa = (1 - P.RATE_F) * wa + P.RATE_F * (s.a - a) / dt
+    wb = (1 - P.RATE_F) * wb + P.RATE_F * (s.b - b) / dt
+    a, b, y = s.a, s.b, s.y
+    local airborne = y > ground + 0.2
 
-    -- where we want to be: the target moves to the goal at a calm speed
+    -- height: the target moves to the goal at a calm speed (Space/Shift move the goal)
+    if (held.u or 0) ~= 0 and not landing and not T then
+      goal = clamp(goal + held.u * P.CLIMB * dt, ground + 1, ground + P.MAX_HEIGHT)
+      target = clamp(target + held.u * P.CLIMB * dt, ground, ground + P.MAX_HEIGHT)
+    end
     local vt = 0
     if landing then
       vt = -P.DESCEND
       target = math.max(target - P.DESCEND * dt, y - 1)
-    elseif target < goal then
-      vt = P.CLIMB
+    elseif target < goal - 1e-6 then
+      vt = math.min(P.CLIMB, (goal - target) / dt)
       target = math.min(goal, target + P.CLIMB * dt)
-    elseif target > goal then
-      vt = -P.DESCEND
+    elseif target > goal + 1e-6 then
+      vt = -math.min(P.DESCEND, (target - goal) / dt)
       target = math.max(goal, target - P.DESCEND * dt)
     end
     if landing then
-      -- on the ground the target stays below us and we stop sinking
       if target < y - 0.3 and math.abs(vy) < 0.08 then still = still + dt else still = 0 end
-      if still > 1 then P.cut(hw); return "landed" end
+      if still > 1 then P.cut(hw); return "landed", learn end
     end
 
-    local e = target - y
-    I = clamp(I + g.hi * e * dt, -0.7, 1.0)
-    local base = clamp(h * (1 + g.hp * e - g.hd * (vy - vt) + I), 0, 3 * h)
-    local airborne = y > ground + 0.2
-    if airborne then
-      Ia = clamp(Ia + g.ti * a * dt, -0.3, 0.3)
-      Ib = clamp(Ib + g.ti * b * dt, -0.3, 0.3)
+    -- the scan starts once the craft hangs steady at its first goal
+    if not scanned and not landing and math.abs(y - goal) < 0.3 and math.abs(vy) < 0.2 then
+      settled = settled + dt
+    else
+      settled = 0
     end
-    local u = { g.tp * a + g.td * wa + Ia, g.tp * b + g.td * wb + Ib }
-    local fs = {}
-    for i, x in ipairs(cal.t) do
-      -- never fully off in the air: from zero a thruster needs 0.5 s to spin up
-      fs[i] = clamp(base - x.sign * h * u[x.axis], P.MIN, 0.99)
+    if not scanned and settled > 1 then
+      local base = h * (1 + I) -- what it takes to hang here: the real hover thrust
+      baseSum, baseN = baseSum + base, baseN + 1
+    end
+    if not scanned and not T and settled > 3 then
+      if baseN > 0 then -- same thrust, now counted from the real hover
+        learn.hover = baseSum / baseN
+        I = h * (1 + I) / learn.hover - 1
+        h = learn.hover
+      end
+      buildScan()
+      scanned = true
+    end
+
+    -- the running test: its time, what it changes, what it records
+    local inj = { base = 0, tau = { 0, 0 }, open = {}, sp = { 0, 0 }, f = {} }
+    if T then
+      T.t0 = T.t0 or now
+      local el = now - T.t0
+      local test = tests[T.name]
+      if el > 0 then -- integrate the push applied since the last step
+        T.qI = T.qI + T.vI * dt + 0.5 * T.u * dt * dt
+        T.vI = T.vI + T.u * dt
+      end
+      local rec = { t = el - P.LAG, y = y, v = s.v, a = a, b = b, Q = T.qI - T.vI * P.LAG }
+      if T.name == "lift" then
+        inj.base = h * T.amp * square(el, test.half)
+      elseif T.name == "k1" or T.name == "k2" then
+        local axis = test.axis
+        inj.open[axis] = true
+        inj.tau[axis] = T.amp * square(el, test.half)
+        rec.ang = axis == 1 and a or b
+      elseif T.name == "m1" or T.name == "m2" then
+        local axis = T.name == "m1" and 1 or 2
+        inj.sp[axis] = el < 1.5 and T.amp or el < 3.0 and -T.amp or 0
+        rec.a, rec.b = a, b
+      elseif test.thruster and el >= 0.8 then
+        inj.f[test.thruster] = T.amp
+      end
+      T.data[#T.data + 1] = rec
+      if el > test.dur then
+        local done = test.analyse(T.data)
+        if T.name == "k2" then retune() end
+        if done or T.tries >= 3 then nextTest() else startTest(T.name, T.amp * 2.5) end
+        if not T and #queue == 0 then learn.done = true end
+      end
+    end
+
+    -- height
+    local e = target - y
+    local frozen = T and T.name == "lift"
+    if not frozen then I = clamp(I + hi() * e * dt, -0.7, 1.5) end
+    local base
+    if frozen then base = h * (1 + I) + inj.base
+    else base = h * (1 + hp() * e - hd() * (vy - vt) + I) end
+    base = clamp(base, 0, 3 * h)
+
+    -- horizontal: speed from the sensors, keys -> wanted speed -> lean
+    local sp = { inj.sp[1], inj.sp[2] }
+    local sideF = {}
+    local fwd, right = held.f or 0, held.r or 0
+    if not T and airborne then
+      if Minv and #s.v >= 2 then
+        local vS = gk * (Minv[1][1] * s.v[1] + Minv[1][2] * s.v[2])
+        local vE = gk * (Minv[2][1] * s.v[1] + Minv[2][2] * s.v[2])
+        pS, pE = pS + vS * dt, pE + vE * dt
+        local wS, wE
+        if (fwd ~= 0 or right ~= 0) and not landing then
+          wS = P.SPEED * (dirs.f[1] * fwd + dirs.r[1] * right)
+          wE = P.SPEED * (dirs.f[2] * fwd + dirs.r[2] * right)
+          moving = true
+        else
+          if moving then tS, tE = pS + vS / P.VEL_K, pE + vE / P.VEL_K; moving = false end
+          wS = clamp(P.POS_K * (tS - pS), -P.SPEED, P.SPEED)
+          wE = clamp(P.POS_K * (tE - pE), -P.SPEED, P.SPEED)
+        end
+        local lim = gk * P.MAX_TILT
+        local aS = clamp(P.VEL_K * (wS - vS), -lim, lim)
+        local aE = clamp(P.VEL_K * (wE - vE), -lim, lim)
+        sideF, aS, aE = sideShare(aS, aE)
+        sp[1], sp[2] = aS / gk, aE / gk
+      else
+        -- no speed sensors: lean while a key is held, level when let go
+        sp[1] = P.MAX_TILT / 2 * (dirs.f[1] * fwd + dirs.r[1] * right)
+        sp[2] = P.MAX_TILT / 2 * (dirs.f[2] * fwd + dirs.r[2] * right)
+      end
+      tS, tE = moving and pS or tS, moving and pE or tE
+    end
+
+    for k = 1, 2 do
+      sp[k] = spPrev[k] + clamp(sp[k] - spPrev[k], -P.TILT_RATE * dt, P.TILT_RATE * dt)
+      spPrev[k] = sp[k]
+    end
+
+    -- tilt: wanted turn rate per axis -> torque in hover units
+    local tau = {}
+    local ang, rate, Iax = { a, b }, { wa, wb }, { Ia, Ib }
+    for k = 1, 2 do
+      local err = ang[k] - sp[k]
+      if airborne and not inj.open[k] then
+        Iax[k] = clamp(Iax[k] + (w * w / (learn.k2 and P.TI or P.TI_PRIOR)) * err * dt, -0.6 * K[k], 0.6 * K[k])
+      end
+      if inj.open[k] then
+        tau[k] = -Iax[k] / K[k] + inj.tau[k]
+      else
+        local alpha = -w * w * err - 2 * P.ZETA * w * rate[k] - Iax[k]
+        tau[k] = clamp(alpha / K[k], -1, 1)
+      end
+    end
+    Ia, Ib = Iax[1], Iax[2]
+
+    local function makeFs(bs, t1, t2)
+      local fs = {}
+      for i = 1, hw.n do
+        if isLift[i] then
+          -- never fully off in the air: from zero a thruster needs 0.5 s to spin up
+          fs[i] = clamp(bs + h * (D1[i] * t1 + D2[i] * t2), P.MIN, 0.99)
+        elseif inj.f[i] then
+          fs[i] = clamp(inj.f[i], 0, 0.99)
+        elseif side[i] and airborne then
+          -- known side thrusters idle at the least thrust (opposite ones cancel):
+          -- from zero they need 0.5 s to spin up
+          fs[i] = clamp(sideF[i] or 0, P.MIN, 0.99)
+        else
+          fs[i] = 0
+        end
+      end
+      return fs
+    end
+    local fs = makeFs(base, tau[1], tau[2])
+    if T and (T.name == "lift" or tests[T.name].axis) then
+      -- the push really applied: thrust after the steps, with minus without the test
+      local ax = tests[T.name].axis
+      local fs0 = ax and makeFs(base, tau[1] - (ax == 1 and inj.tau[1] or 0), tau[2] - (ax == 2 and inj.tau[2] or 0))
+        or makeFs(base - inj.base, tau[1], tau[2])
+      local function channel(f)
+        local v, nl = 0, 0
+        for i, x in ipairs(cal.t) do
+          if isLift[i] then
+            nl = nl + 1
+            v = v + (ax == 1 and x.c1 or ax == 2 and x.c2 or 1) * P.real(f[i]) / h
+          end
+        end
+        return ax and v or v / nl
+      end
+      T.u = channel(fs) - channel(fs0)
     end
     hw.write(fs)
 
     if hw.show and now >= nextShow then
       nextShow = now + 0.5
-      hw.show({ y = y - ground, goal = goal - ground, a = a, b = b, base = base / h, landing = landing })
+      hw.show({ y = y - ground, goal = goal - ground, a = a, b = b, base = base / h, landing = landing,
+        scan = T and T.name, learned = learn.done })
     end
     hw.wait(P.DT)
   end
