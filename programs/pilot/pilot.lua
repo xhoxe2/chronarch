@@ -1,12 +1,11 @@
 -- CHRONARCH :: pilot  (computer on any Create Aeronautics craft)
---   pilot                  finds every device on board, checks a new or
---                          rebuilt craft (on its legs, Enter), shows what you
---                          can steer and why not, Enter = take off to +4.
---                          The first flight learns the craft in the air.
---   pilot 8                the same, to +8
---   pilot go [h]           take off at once, no questions
---   pilot info             only the report (also saved to /pilot.txt)
---   pilot check            check the craft again (old name: calibrate)
+--   pilot calibrate        analyse the craft (on its legs): finds every device,
+--                          fires each thruster alone, then a learning hop to
+--                          +4 (hands off ~40 s, it lands by itself) and a
+--                          report: what is on board, what you can steer, why not
+--   pilot                  fly: take off to +4, keys work at once
+--   pilot 8                fly to +8
+--   pilot info             the report again (also saved to /pilot.txt)
 --   pilot forward north    which way W flies (the first flight finds it by
 --                          itself: away from the screen; this overrides it)
 --   pilot forward auto     back to finding it by itself
@@ -194,11 +193,6 @@ local function page(lines)
     y = y + 1
   end
 end
-local function ask(question)
-  print(question)
-  local _, k = os.pullEvent("key")
-  return k == keys.enter
-end
 local function sameThrusters(c)
   local same = c and c.t and c.names and #c.names == #names
   for i = 1, #names do same = same and c.names[i] == names[i] end
@@ -208,8 +202,8 @@ local function learned(c) return c and c.learn and c.learn.v == P.SCAN_VERSION a
 
 -- the ground check: every thruster fires alone; returns the new calibration
 local function check(old)
-  print("CHECKING THE CRAFT (on its legs): each thruster")
-  print("fires alone for a moment. Any key = stop.")
+  print("1/2 CHECKING EVERY THRUSTER (on its legs):")
+  print("each fires alone for a moment. Any key = stop.")
   local new, why, partial = guarded(function() return P.calibrate(hw) end)
   if not new then
     page((P.report(devices, partial and { t = partial, names = names, why = why } or nil, nil)))
@@ -220,6 +214,23 @@ local function check(old)
   if old and old.forwardManual then new.forward, new.forwardManual = old.forward, true end
   saveCal(new)
   return new
+end
+
+-- a flight; returns its result and what it learned (saved here)
+local function flight(cal, height, learnOnly)
+  logf = fs.open(LOG_FILE, "w")
+  logUntil = os.clock() + 300 -- at most 5 minutes of log
+  logf.writeLine("# t y gimbalX gimbalZ thrust... | speeds | thrusters: " .. table.concat(names, " ")
+    .. " | speed sensors: " .. table.concat(speeds, " "))
+  local opts = { height = height, forward = cal.forward, forwardManual = cal.forwardManual,
+    altSide = peripheral.getName(alt), learnOnly = learnOnly }
+  local result, learn = guarded(function() return P.fly(hw, cal, opts) end)
+  if learn and learn.done and not learned(cal) then
+    cal.learn = learn
+    if learn.forward and not cal.forwardManual then cal.forward = learn.forward end
+    saveCal(cal)
+  end
+  return result, learn
 end
 
 term.clear()
@@ -251,58 +262,40 @@ elseif arg == "info" then
   page((P.report(devices, ok and cal or nil, ok and learned(cal) or nil)))
   return
 elseif arg == "calibrate" or arg == "check" then
-  if not canFly then page((P.report(devices, nil, nil))); print("Cannot check: see NO above."); return end
-  local new = check(cal)
-  if new then page((P.report(devices, new, nil))); print("Now: pilot") end
+  if not canFly then page((P.report(devices, nil, nil))); print("Cannot fly: see NO above."); return end
+  cal = check(cal)
+  if not cal then return end
+  term.clear()
+  term.setCursorPos(1, 1)
+  print("2/2 LEARNING HOP: lifts +4, learns the craft")
+  print("(~40 s, it rocks a little on purpose), then")
+  print("lands by itself. HANDS OFF. Any key = all off.")
+  local result = flight(cal, 4, true)
+  term.clear()
+  term.setCursorPos(1, 1)
+  page((P.report(devices, cal, learned(cal))))
+  if result == "landed" and learned(cal) then
+    print(cal.forward and ("Analysis done. W flies " .. cal.forward .. ". Fly: pilot")
+      or "Analysis done; front not found: pilot forward <dir>")
+  else
+    print("Hop stopped (" .. tostring(result) .. "): the first flight learns the rest.")
+  end
   return
 end
 
-local quick = arg == "go"
-local height = math.max(1, math.min(30, tonumber(quick and arg2 or arg) or 4))
 if not canFly then page((P.report(devices, nil, nil))); print("Cannot fly: see NO above."); return end
 if not sameThrusters(cal) then
-  if quick then print("Craft not checked yet: run pilot"); return end
-  print("New or rebuilt craft: it has to be checked.")
-  if not ask("Enter = check it now, other key = cancel") then return end
-  term.clear()
-  term.setCursorPos(1, 1)
-  cal = check(cal)
-  if not cal then return end
+  print("This craft is not analysed yet (new or rebuilt).")
+  print("First: pilot calibrate")
+  return
 end
-if not quick then
-  term.clear()
-  term.setCursorPos(1, 1)
-  local lines, caps = P.report(devices, cal, learned(cal))
-  page(lines)
-  if not (caps.height.ok and caps.level.ok) then print("Cannot fly: see NO above."); return end
-  if not ask("Enter = take off, other key = cancel") then return end
-end
-
-term.clear()
-term.setCursorPos(1, 1)
-logf = fs.open(LOG_FILE, "w")
-logUntil = os.clock() + 300 -- at most 5 minutes of log
-logf.writeLine("# t y gimbalX gimbalZ thrust... | speeds | thrusters: " .. table.concat(names, " ")
-  .. " | speed sensors: " .. table.concat(speeds, " "))
+local height = math.max(1, math.min(30, tonumber(arg == "go" and arg2 or arg) or 4))
 print(("PILOT +%d  W/S A/D move, Space/Shift up/down"):format(height))
 print("arrows +-1 block, L land, other key = ALL OFF")
-local opts = { height = height, forward = cal.forward, forwardManual = cal.forwardManual,
-  altSide = peripheral.getName(alt) }
-local result, learn = guarded(function() return P.fly(hw, cal, opts) end)
+if not learned(cal) then print("(not learned yet: hands off while it learns)") end
+local result, learn = flight(cal, height, false)
 term.setCursorPos(1, 8)
 print("Result: " .. tostring(result) .. ". Thrusters off.")
-if learn and learn.done and not learned(cal) then
-  cal.learn = learn
-  if learn.forward and not cal.forwardManual then cal.forward = learn.forward end
-  saveCal(cal)
-  print(("Learned the craft: turn %d, g %.1f, hover %.2f%%."):format(math.floor(learn.kref or 0), learn.G or 0,
-    (learn.hover or 0) * 100))
-  if learn.forward and not cal.forwardManual then
-    print("Front found: W flies " .. learn.forward .. " (away from the screen).")
-  end
-  if not (learn.forward or cal.forwardManual) then
-    print("Screen side not found (Altitude Sensor in the")
-    print("middle?): pilot forward <dir>")
-  end
-  print("pilot info: the full report")
+if learn and learn.forward and not cal.forwardManual and learned(cal) == learn then
+  print("Front found: W flies " .. learn.forward .. " (away from the screen).")
 end

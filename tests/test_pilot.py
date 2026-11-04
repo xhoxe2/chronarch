@@ -665,32 +665,35 @@ def run_program(sim, files, events=(), arg=None, arg2=None):
 
 files = lua.table_from({})
 sim = Sim(dist=EDGE, **REAL)
-# a new craft: pilot finds it unchecked, Enter checks it, the report shows
-# every device and what can be steered; another key at "take off" cancels
-out = run_program(sim, files, events=[(0, "key", "enter", False), (1e9, "key", "q", False)])
-check("program: new craft -> checks it, saves /.pilot with the thruster names",
-      files["/.pilot"] is not None and "creative_thruster_4" in (files["/.pilot"] or ""), out)
-check("program: report says which side each thruster lifts",
-      any("thruster_4" in l and "lifts north side" in l for l in out)
-      and any("thruster_5" in l and "lifts east side" in l for l in out), out)
-check("program: report lists the sensors and the network",
+# pilot calibrate = the whole analysis: every thruster on the ground, a
+# learning hop that lands by itself, then the report of every device and of
+# what can be steered (and why not)
+out = run_program(sim, files, arg="calibrate")
+check("program: calibrate saves /.pilot with the thruster names and what it learned",
+      "creative_thruster_4" in (files["/.pilot"] or "") and "learn" in (files["/.pilot"] or ""), out)
+check("program: calibrate's hop lands by itself, all off", any("Analysis done" in l for l in out)
+      and all(c == 0 for c in sim.cmd) and sim.on_ground(), out)
+check("program: report says which side each thruster lifts (pilot's sides)",
+      any("thruster_4" in l and "lifts front side" in l for l in out)
+      and any("thruster_5" in l and "lifts right side" in l for l in out), out)
+check("program: report lists the sensors (what each speed sensor sees) and the network",
       any("top" in l and "gimbal" in l for l in out) and any("left" in l and "altitude" in l for l in out)
-      and any("back" in l and "speed" in l for l in out) and any("bottom" in l and "network" in l for l in out), out)
+      and any("back" in l and "speed: sees" in l for l in out) and any("bottom" in l and "network" in l for l in out), out)
 check("program: report says what can be steered and why not",
       any(l.startswith(" Up/down") and "YES" in l for l in out) and any(l.startswith(" Level") and "YES" in l for l in out)
+      and any(l.startswith(" Hold still") and "YES" in l for l in out)
       and any(l.startswith(" Turn") and "NO" in l for l in out) and any("heading sensor" in l for l in out)
       and all(len(l) <= 51 for l in out), out)
-check("program: report kept in /pilot.txt; cancelled = nothing flies",
-      "CONTROLS" in (files["/pilot.txt"] or "") and all(c == 0 for c in sim.cmd), out)
+check("program: report kept in /pilot.txt", "CONTROLS" in (files["/pilot.txt"] or ""), out)
+
 # first flight: takeoff, scan, W held 5 s (the key repeats), L lands
 t0 = sim.t
 w = [(t0 + 50, "key", "w", False)] + [(t0 + 50.3 + 0.3 * i, "key", "w", True) for i in range(16)] + \
     [(t0 + 55, "key_up", "w", False), (t0 + 70, "key", "l", False)]
-out = run_program(sim, files, events=w, arg="go")
+out = run_program(sim, files, events=w)
 north = -(sim.after(t0, 55)[5] - sim.after(t0, 50)[5])
 check("program: W flies north (keys through real events)", north > 5, (north, out))
 check("program: L lands, thrusters off", any("landed" in l for l in out) and all(c == 0 for c in sim.cmd), out)
-check("program: saves what it learned", "learn" in (files["/.pilot"] or "") and any("Learned" in l for l in out), out)
 info = run_program(sim, files, arg="info")
 check("program: after the flight the report knows the speed sensors and the front",
       any("speed: sees" in l for l in info) and any(l.startswith(" Hold still") and "YES" in l for l in info)
@@ -702,7 +705,7 @@ t0 = sim.t
 w = [(t0 + 15, "key", "w", False), (t0 + 30, "key", "l", False)]
 out = run_program(sim, files, events=w, arg="go")
 moved = math.hypot(sim.after(t0, 29)[5] - sim.after(t0, 15)[5], sim.after(t0, 29)[6] - sim.after(t0, 15)[6])
-check("program: second flight needs no scan, a stuck W lets go by itself", moved < 6 and
+check("program: next flight, a stuck W lets go by itself", moved < 6 and
       any("landed" in l for l in out), (moved, out))
 # Ctrl+T in the air: all off
 t0 = sim.t
@@ -716,10 +719,8 @@ check("program: any other key -> all off", any("stopped" in l for l in out) and 
 # the computer turned the other way (screen west): calibrate finds it, W flies east
 sim3 = Sim(alt=(1.0, 0.0), **REAL)  # Altitude Sensor on the computer's left = south of the middle
 files3 = lua.table_from({})
-run_program(sim3, files3, arg="check")
-t0 = sim3.t
-out3 = run_program(sim3, files3, events=[(t0 + 60, "key", "l", False)], arg="go")
-check("program: first flight finds the screen side by itself", any("W flies east" in l for l in out3), out3)
+out3 = run_program(sim3, files3, arg="calibrate")
+check("program: calibrate finds the screen side by itself", any("W flies east" in l for l in out3), out3)
 t0 = sim3.t
 w = [(t0 + 15, "key", "w", False)] + [(t0 + 15.3 + 0.3 * i, "key", "w", True) for i in range(16)] + \
     [(t0 + 20, "key_up", "w", False), (t0 + 35, "key", "l", False)]
@@ -730,12 +731,9 @@ check("program: ... and on the next flight W flies east", east > 4, (east, out3)
 # re-assembled: thruster names changed
 sim2 = Sim(**REAL)
 sim2_files = lua.table_from({"/.pilot": (files["/.pilot"] or "").replace("creative_thruster_4", "creative_thruster_9")})
-out = run_program(sim2, sim2_files, arg="go")
-check("program: renamed thrusters -> says it must be checked, does not fly", any("not checked" in l for l in out)
-      and all(c == 0 for c in sim2.cmd), out)
-out = run_program(sim2, sim2_files, events=[(0, "key", "q", False)])
-check("program: renamed thrusters, plain pilot -> offers the check, another key cancels",
-      any("rebuilt" in l for l in out) and all(c == 0 for c in sim2.cmd), out)
+out = run_program(sim2, sim2_files)
+check("program: renamed thrusters -> asks for pilot calibrate, does not fly",
+      any("pilot calibrate" in l for l in out) and all(c == 0 for c in sim2.cmd), out)
 
 # =============================================================================
 failed = [x for x in results if not x[1]]

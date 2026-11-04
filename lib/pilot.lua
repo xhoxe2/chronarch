@@ -739,6 +739,7 @@ function P.fly(hw, cal, opts)
       vt = -math.min(P.DESCEND, (target - goal) / dt)
       target = math.max(goal, target - P.DESCEND * dt)
     end
+    if opts.learnOnly and learn.done and not landing then landing = true end -- learning hop: done, land
     if landing then
       if target < y - 0.3 and math.abs(vy) < 0.08 then still = still + dt else still = 0 end
       if still > 1 then P.cut(hw); return "landed", learn end
