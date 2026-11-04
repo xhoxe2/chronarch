@@ -284,7 +284,7 @@ check("calibrate: kill key stops it", kill_cal is None and kill_why == "stopped"
 
 
 # --- first flight: takes off, learns the craft, holds still, lands ------------
-def first_flight(name, sim, height=4, land_after=55.0, tilt_ok=8.0, calm_ok=2.0):
+def first_flight(name, sim, height=4, land_after=65.0, tilt_ok=8.0, calm_ok=2.0):
     cal, why = calibrate(sim)
     if not cal:
         check(name + ": calibrated", False, why)
@@ -312,8 +312,11 @@ def first_flight(name, sim, height=4, land_after=55.0, tilt_ok=8.0, calm_ok=2.0)
 sim = Sim(dist=EDGE, **REAL)
 cal, learn, t0 = first_flight("real platform, player at the edge", sim)
 if learn:
-    check("learns turn rate on X within 35%", abs(learn.get("k1", 0) - 120) / 120 < 0.35, learn.get("k1"))
-    check("learns turn rate on Z within 35%", abs(learn.get("k2", 0) - 120) / 120 < 0.35, learn.get("k2"))
+    check("learns the turn rate (lever of a thruster) within 35%", abs(learn.get("kref", 0) - 120) / 120 < 0.35,
+          learn.get("kref"))
+    c = learn.get("c")
+    got = [(round(c[i][1]), round(c[i][2])) for i in range(1, 5)] if c else None
+    check("learns which way each thruster turns the craft, in the air", got == [(1, 0), (0, -1), (-1, 0), (0, 1)], got)
     check("learns gravity within 25%", abs(learn.get("G", 0) - 9.8) / 9.8 < 0.25, learn.get("G"))
     check("learns the real hover thrust within 10%", abs(learn.get("hover", 0) - 0.0137) / 0.0137 < 0.10,
           learn.get("hover"))
@@ -373,6 +376,39 @@ if learn3:
     check("forward = east: W goes east", sim.after(t0, 20)[6] - sim.after(t0, 15)[6] > 8,
           sim.after(t0, 20)[6] - sim.after(t0, 15)[6])
 
+# both speed sensors put along one direction (the second real flight): it must
+# notice, warn, not trust them, and still fly and land
+sim = Sim(sensors=((-1, 0), (-1, 0)), **REAL)
+cal_same, learn_same, _ = first_flight("both speed sensors along one direction", sim, tilt_ok=8.0)
+if learn_same:
+    check("same-direction speed sensors: noticed", learn_same.get("sameAxis") and not learn_same.get("M"), learn_same)
+    t0 = sim.t
+    sim.held_plan = [(t0 + 15, t0 + 19, {"r": 1})]
+    sim.events = [(t0 + 30, "land")]
+    sim.limit = t0 + 90
+    res, _ = fly(sim, cal_same, 4, "north", learn_same)
+    east = sim.after(t0, 21)[6] - sim.after(t0, 15)[6]
+    check("same-direction speed sensors: D still goes right (east), lands", east > 2 and res == "landed", (east, res))
+
+# calibrated on uneven ground (the real log): N and W tipped the craft over a
+# diagonal at half the thrust. The in-air scan has to measure the truth.
+sim = Sim(dist=EDGE, **REAL)
+cal_r, _ = calibrate(sim)
+cal_r.t[1].c1, cal_r.t[1].c2, cal_r.t[1].tip = 1.0, 0.98, cal_r.t[1].tip / 2
+cal_r.t[4].c1, cal_r.t[4].c2, cal_r.t[4].tip = 0.98, 1.0, cal_r.t[4].tip / 2
+cal_r.hover = cal_r.hover * 0.75
+t0 = sim.t
+sim.events = [(t0 + 65, "land")]
+sim.limit = t0 + 130
+res, learn_r = fly(sim, cal_r)
+learn_r = ltable(learn_r)
+c = learn_r.get("c")
+got = [(round(c[i][1]), round(c[i][2])) for i in range(1, 5)] if c else None
+check("uneven-ground calibration: the air scan finds the true levers", got == [(1, 0), (0, -1), (-1, 0), (0, 1)], got)
+check("uneven-ground calibration: level while holding (< 2 deg)", tilt_max(window(sim, t0 + 53, t0 + 65)) < 2,
+      tilt_max(window(sim, t0 + 53, t0 + 65)))
+check("uneven-ground calibration: lands", res == "landed", res)
+
 # corners
 sim = Sim(layout="x", dist=EDGE, **REAL)
 # hover is guessed for edge thrusters (2.5x), corners tip later: a harder takeoff
@@ -380,7 +416,7 @@ first_flight("x layout (corner thrusters) + edge", sim, tilt_ok=10.0)
 
 # side thrusters: the craft moves without leaning
 sim = Sim(side=[(-1, 0), (0, 1), (1, 0), (0, -1)], **REAL)
-cal4, learn4, _ = first_flight("with 4 side thrusters", sim)
+cal4, learn4, _ = first_flight("with 4 side thrusters", sim, land_after=75.0)  # 4 more tests
 if learn4:
     sides = learn4.get("side") or {}
     check("scan finds all 4 side thrusters", len(list(sides.keys())) == 4, ltable(sides))
@@ -415,7 +451,7 @@ sim = Sim(**REAL)
 cal6, _ = calibrate(sim)
 sim.hov = 0.0137 * 1.4
 t0 = sim.t
-sim.events = [(t0 + 55, "land")]
+sim.events = [(t0 + 65, "land")]
 sim.limit = t0 + 120
 res, learn6 = fly(sim, cal6)
 learn6 = ltable(learn6)
@@ -423,13 +459,24 @@ check("40% heavier than calibrated: learns the new hover (within 10%)",
       abs(learn6.get("hover", 0) - 0.0137 * 1.4) / (0.0137 * 1.4) < 0.1, learn6.get("hover"))
 check("40% heavier: lands", res == "landed", res)
 
+# an old saved scan with a broken speed-sensor map must not steer the takeoff
+sim = Sim(**REAL)
+cal_old, _ = calibrate(sim)
+t0 = sim.t
+sim.events = [(t0 + 65, "land")]
+sim.limit = t0 + 130
+res, learn_old = fly(sim, cal_old, 4, "north", {"done": True, "k1": 60, "k2": 103, "M": lua.eval("{{0.157,0.002},{0.157,0.0021}}")})
+drift = math.hypot(sim.after(t0, 15)[5], sim.after(t0, 15)[6])
+check("old saved scan is ignored: rescans, no runaway on takeoff", ltable(learn_old).get("kref") and drift < 6
+      and res == "landed", (drift, res))
+
 # a held Up key: the goal stops at +30
 sim = Sim(**REAL)
 cal7, _ = calibrate(sim)
 t0 = sim.t
 sim.events = [(t0 + 5 + i * 0.05, "up") for i in range(200)] + [(t0 + 20, "land")]
 sim.limit = t0 + 200
-res, _ = fly(sim, cal7, 4, "north", {"done": True, "k1": 120, "k2": 120})
+res, _ = fly(sim, cal7, 4, "north", {"done": True, "kref": 120})
 check("goal never above +30 blocks", max(x[1] for x in window(sim, t0, sim.t)) < 31,
       max(x[1] for x in window(sim, t0, sim.t)))
 

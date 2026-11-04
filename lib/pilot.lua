@@ -256,10 +256,22 @@ end
 function P.fly(hw, cal, opts)
   opts = opts or {}
   local learn = {}
-  for k, v in pairs(cal.learn or {}) do learn[k] = v end
+  -- a scan from an older version (no levers measured) is not trusted at all
+  if cal.learn and cal.learn.kref then
+    for k, v in pairs(cal.learn) do learn[k] = v end
+  end
   local h = learn.hover or cal.hover
   local G = learn.G or 9.8
-  local K = { learn.k1 or P.K_GUESS, learn.k2 or P.K_GUESS }
+  -- how each lifter turns the craft: from the ground scan at first (rough:
+  -- uneven ground rocks it on a diagonal), measured in the air once scanned
+  local mixCal = cal
+  if learn.c then
+    mixCal = { t = {} }
+    for i, x in ipairs(cal.t) do
+      mixCal.t[i] = learn.c[i] and { kind = "lift", c1 = learn.c[i][1], c2 = learn.c[i][2] } or x
+    end
+  end
+  local K = learn.kref and { learn.kref, learn.kref } or { P.K_GUESS, P.K_GUESS }
   local w = P.W_PRIOR
   local Minv = learn.M and inv2(learn.M)
   local gk = G * math.pi / 180 -- blocks/s^2 per degree of lean
@@ -270,9 +282,14 @@ function P.fly(hw, cal, opts)
   end
   local side = learn.side or {} -- [i] = { s, e }: push per unit thrust (blocks/s^2)
   local dirs = P.COMPASS[opts.forward or "north"] or P.COMPASS.north
-  local D1, D2 = P.mixer(cal)
-  local isLift = {}
-  for i, x in ipairs(cal.t) do isLift[i] = x.kind == "lift" end
+  local D1, D2 = P.mixer(mixCal)
+  local isLift, lifters = {}, {}
+  for i, x in ipairs(cal.t) do
+    isLift[i] = x.kind == "lift"
+    if isLift[i] then lifters[#lifters + 1] = i end
+  end
+  local Bm = {} -- measured: lifter i -> { turn X, turn Z } per unit of its thrust
+  local warn = learn.sameAxis and "SPEED SENSORS MEASURE THE SAME WAY" or nil
 
   local s = hw.read()
   local ground = s.y
@@ -290,7 +307,7 @@ function P.fly(hw, cal, opts)
   local spPrev = { 0, 0 }
   local settled, baseSum, baseN = 0, 0, 0
   local queue, T = nil, nil -- scan tests still to run, the running one
-  local scanned = learn.k1 ~= nil or opts.noscan
+  local scanned = learn.kref ~= nil or opts.noscan
 
   local function hp() return P.HP * 9.8 / G end
   local function hd() return P.HD * 9.8 / G end
@@ -330,16 +347,44 @@ function P.fly(hw, cal, opts)
     if g > 2 and g < 60 then learn.G = g; G = g; gk = g * math.pi / 180 end
     return true
   end }
-  local function tiltTest(axis)
-    return { half = 0.3, dur = 1.0, axis = axis, analyse = function(d)
-      local k, seen = fitPush(d, "ang")
-      if not k then return true end
-      if seen < 0.4 then return false end
-      if k > 5 and k < 5000 then learn["k" .. axis] = k; K[axis] = k end
+  -- One lifter at a time gets a little more, then less thrust, the craft
+  -- free to turn: how fast it turns on X and on Z is that thruster's lever
+  -- (deg/s^2 per hover share). Physics, not the ground's guess.
+  local function thrTest(i)
+    return { half = 0.3, dur = 0.8, lifter = i, analyse = function(d)
+      local b1, s1 = fitPush(d, "a")
+      local b2, s2 = fitPush(d, "b")
+      if not (b1 and b2) then return true end
+      if math.max(s1, s2) < 0.4 then return false end -- too small to see: harder
+      Bm[i] = { b1, b2 }
       return true
     end }
   end
-  tests.k1, tests.k2 = tiltTest(1), tiltTest(2)
+  -- level out with the levelling on; over as soon as the craft is calm
+  tests.rest = { dur = 5, calm = true, analyse = function() return true end }
+  -- all levers measured: share torque by them from now on
+  tests.mix = { dur = 0, analyse = function()
+    local kref = 0
+    for _, i in ipairs(lifters) do
+      if not Bm[i] then return true end
+      kref = math.max(kref, math.abs(Bm[i][1]), math.abs(Bm[i][2]))
+    end
+    if kref < 5 or kref > 5000 then return true end
+    local c, cover = {}, { 0, 0, 0, 0 }
+    for _, i in ipairs(lifters) do
+      c[i] = { Bm[i][1] / kref, Bm[i][2] / kref }
+      for k = 1, 2 do
+        if c[i][k] > 0.2 then cover[2 * k - 1] = 1 elseif c[i][k] < -0.2 then cover[2 * k] = 1 end
+      end
+    end
+    if cover[1] + cover[2] + cover[3] + cover[4] < 4 then return true end -- cannot level: keep the old
+    learn.c, learn.kref = c, kref
+    local mc = { t = {} }
+    for i, x in ipairs(cal.t) do mc.t[i] = c[i] and { kind = "lift", c1 = c[i][1], c2 = c[i][2] } or x end
+    D1, D2 = P.mixer(mc)
+    K = { kref, kref }
+    return true
+  end }
   -- Lean one way, then the other, on each axis; meanwhile record both lean
   -- angles and every speed sensor. Each sensor's speed changes by
   -- M[i][1] * lean X + M[i][2] * lean Z per second: fitted over both tests at
@@ -373,9 +418,16 @@ function P.fly(hw, cal, opts)
       moveData[axis] = d
       if axis == 2 and moveData[1] then
         local M = fitM()
-        if M and inv2(M) then
-          learn.M, Minv = M, inv2(M)
+        local r1 = M and math.sqrt(M[1][1] ^ 2 + M[1][2] ^ 2) or 0
+        local r2 = M and math.sqrt(M[2][1] ^ 2 + M[2][2] ^ 2) or 0
+        local det = M and math.abs(M[1][1] * M[2][2] - M[1][2] * M[2][1]) or 0
+        if r1 > 0 and r2 > 0 and det > 0.4 * r1 * r2 then -- the two sensors see different ways
+          learn.M, Minv, learn.sameAxis = M, inv2(M), nil
           gk = (math.sqrt(M[1][1] ^ 2 + M[2][1] ^ 2) + math.sqrt(M[1][2] ^ 2 + M[2][2] ^ 2)) / 2
+        else
+          -- both measure (nearly) one direction, or one is dead: no holding still
+          learn.M, Minv, learn.sameAxis = nil, nil, true
+          warn = "SPEED SENSORS MEASURE THE SAME WAY"
         end
       end
       return true
@@ -415,15 +467,20 @@ function P.fly(hw, cal, opts)
 
   local function buildScan()
     -- pushes of at least 2 thrust steps, or the steps would hide them
-    local step, dmax = 2 / 1500 / h, { 0, 0 }
-    for i = 1, hw.n do dmax[1] = math.max(dmax[1], math.abs(D1[i])); dmax[2] = math.max(dmax[2], math.abs(D2[i])) end
+    local step = 2 / 1500 / h
     tests.lift.amp = math.max(0.15, step)
-    tests.k1.amp = math.max(0.05, step / math.max(dmax[1], 0.1))
-    tests.k2.amp = math.max(0.05, step / math.max(dmax[2], 0.1))
     -- speed sensors first: until then nothing stops the craft drifting
     queue = {}
     if #s.v >= 2 then queue = { "m1", "m2" } end
-    queue[#queue + 1] = "lift"; queue[#queue + 1] = "k1"; queue[#queue + 1] = "k2"
+    queue[#queue + 1] = "lift"
+    queue[#queue + 1] = "rest"
+    for _, i in ipairs(lifters) do
+      tests["t" .. i] = thrTest(i)
+      tests["t" .. i].amp = math.max(0.2, step)
+      queue[#queue + 1] = "t" .. i
+      queue[#queue + 1] = "rest" -- level out again before the next one
+    end
+    queue[#queue + 1] = "mix"
     if #s.v >= 2 then
       for i, x in ipairs(cal.t) do
         if x.kind ~= "lift" then
@@ -469,7 +526,7 @@ function P.fly(hw, cal, opts)
     local dt = math.max(now - t, 0.01)
     t = now
     dtAvg = 0.95 * dtAvg + 0.05 * dt
-    if learn.k2 then retune() end
+    if learn.kref then retune() end
     if math.abs(s.a) > P.TILT_CUT or math.abs(s.b) > P.TILT_CUT then P.cut(hw); return "tilt", learn end
     vy = 0.5 * vy + 0.5 * (s.y - y) / dt
     wa = (1 - P.RATE_F) * wa + P.RATE_F * (s.a - a) / dt
@@ -519,7 +576,7 @@ function P.fly(hw, cal, opts)
     end
 
     -- the running test: its time, what it changes, what it records
-    local inj = { base = 0, tau = { 0, 0 }, open = {}, sp = { 0, 0 }, f = {} }
+    local inj = { base = 0, tau = { 0, 0 }, open = {}, sp = { 0, 0 }, f = {}, df = {} }
     if T then
       T.t0 = T.t0 or now
       local el = now - T.t0
@@ -531,11 +588,9 @@ function P.fly(hw, cal, opts)
       local rec = { t = el - P.LAG, y = y, v = s.v, a = a, b = b, Q = T.qI - T.vI * P.LAG }
       if T.name == "lift" then
         inj.base = h * T.amp * square(el, test.half)
-      elseif T.name == "k1" or T.name == "k2" then
-        local axis = test.axis
-        inj.open[axis] = true
-        inj.tau[axis] = T.amp * square(el, test.half)
-        rec.ang = axis == 1 and a or b
+      elseif test.lifter then
+        inj.open[1], inj.open[2] = true, true
+        inj.df[test.lifter] = T.amp * square(el, test.half)
       elseif T.name == "m1" or T.name == "m2" then
         local axis = T.name == "m1" and 1 or 2
         inj.sp[axis] = el < 1.5 and T.amp or el < 3.0 and -T.amp or 0
@@ -544,9 +599,18 @@ function P.fly(hw, cal, opts)
         inj.f[test.thruster] = T.amp
       end
       T.data[#T.data + 1] = rec
+      if test.calm and el > 0.6 and math.abs(a) < 1 and math.abs(b) < 1 and math.abs(wa) < 1.5 and math.abs(wb) < 1.5 then
+        el = test.dur + 1
+      end
+      if test.lifter and (math.abs(a) > 8 or math.abs(b) > 8) then
+        -- leaning too far with the levelling off: give up on this one
+        T.tries = 99
+        T.data = {}
+        el = test.dur + 1
+      end
       if el > test.dur then
         local done = test.analyse(T.data)
-        if T.name == "k2" then retune() end
+        if T.name == "mix" then retune() end
         if done or T.tries >= 3 then nextTest() else startTest(T.name, T.amp * 2.5) end
         if not T and #queue == 0 then learn.done = true end
       end
@@ -569,6 +633,12 @@ function P.fly(hw, cal, opts)
       if Minv and #s.v >= 2 then
         local vS = gk * (Minv[1][1] * s.v[1] + Minv[1][2] * s.v[2])
         local vE = gk * (Minv[2][1] * s.v[1] + Minv[2][2] * s.v[2])
+        if math.sqrt(vS * vS + vE * vE) > 2 * P.SPEED + 2 then
+          -- far faster than ever asked: the speed picture is wrong. Stop
+          -- trusting it for this flight, just keep level.
+          Minv, warn = nil, "SPEED RUNAWAY: holding level only"
+          vS, vE = 0, 0
+        end
         pS, pE = pS + vS * dt, pE + vE * dt
         local wS, wE
         if (fwd ~= 0 or right ~= 0) and not landing then
@@ -604,7 +674,7 @@ function P.fly(hw, cal, opts)
     for k = 1, 2 do
       local err = ang[k] - sp[k]
       if airborne and not inj.open[k] then
-        Iax[k] = clamp(Iax[k] + (w * w / (learn.k2 and P.TI or P.TI_PRIOR)) * err * dt, -0.6 * K[k], 0.6 * K[k])
+        Iax[k] = clamp(Iax[k] + (w * w / (learn.kref and P.TI or P.TI_PRIOR)) * err * dt, -0.6 * K[k], 0.6 * K[k])
       end
       if inj.open[k] then
         tau[k] = -Iax[k] / K[k] + inj.tau[k]
@@ -615,12 +685,12 @@ function P.fly(hw, cal, opts)
     end
     Ia, Ib = Iax[1], Iax[2]
 
-    local function makeFs(bs, t1, t2)
+    local function makeFs(bs, t1, t2, plain)
       local fs = {}
       for i = 1, hw.n do
         if isLift[i] then
           -- never fully off in the air: from zero a thruster needs 0.5 s to spin up
-          fs[i] = clamp(bs + h * (D1[i] * t1 + D2[i] * t2), P.MIN, 0.99)
+          fs[i] = clamp(bs + h * (D1[i] * t1 + D2[i] * t2 + (plain and 0 or inj.df[i] or 0)), P.MIN, 0.99)
         elseif inj.f[i] then
           fs[i] = clamp(inj.f[i], 0, 0.99)
         elseif side[i] and airborne then
@@ -634,29 +704,23 @@ function P.fly(hw, cal, opts)
       return fs
     end
     local fs = makeFs(base, tau[1], tau[2])
-    if T and (T.name == "lift" or tests[T.name].axis) then
+    if T and (T.name == "lift" or tests[T.name].lifter) then
       -- the push really applied: thrust after the steps, with minus without the test
-      local ax = tests[T.name].axis
-      local fs0 = ax and makeFs(base, tau[1] - (ax == 1 and inj.tau[1] or 0), tau[2] - (ax == 2 and inj.tau[2] or 0))
-        or makeFs(base - inj.base, tau[1], tau[2])
-      local function channel(f)
-        local v, nl = 0, 0
-        for i, x in ipairs(cal.t) do
-          if isLift[i] then
-            nl = nl + 1
-            v = v + (ax == 1 and x.c1 or ax == 2 and x.c2 or 1) * P.real(f[i]) / h
-          end
-        end
-        return ax and v or v / nl
+      local j = tests[T.name].lifter
+      if j then
+        T.u = (P.real(fs[j]) - P.real(makeFs(base, tau[1], tau[2], true)[j])) / h
+      else
+        local fs0, v = makeFs(base - inj.base, tau[1], tau[2]), 0
+        for _, i in ipairs(lifters) do v = v + (P.real(fs[i]) - P.real(fs0[i])) / h end
+        T.u = v / #lifters
       end
-      T.u = channel(fs) - channel(fs0)
     end
     hw.write(fs)
 
     if hw.show and now >= nextShow then
       nextShow = now + 0.5
       hw.show({ y = y - ground, goal = goal - ground, a = a, b = b, base = base / h, landing = landing,
-        scan = T and T.name, learned = learn.done })
+        scan = T and T.name, learned = learn.done, warn = warn })
     end
     hw.wait(P.DT)
   end

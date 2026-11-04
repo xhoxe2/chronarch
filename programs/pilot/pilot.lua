@@ -108,7 +108,11 @@ function hw.show(s)
   term.setTextColor(colors.white)
   term.setCursorPos(1, 6)
   term.clearLine()
-  if s.scan then
+  if s.warn then
+    term.setTextColor(colors.red)
+    term.write(s.warn)
+    term.setTextColor(colors.white)
+  elseif s.scan then
     term.setTextColor(colors.yellow)
     term.write("LEARNING THE CRAFT: " .. s.scan .. " (hands off)")
     term.setTextColor(colors.white)
@@ -219,6 +223,11 @@ print("Result: " .. tostring(result) .. ". Thrusters off.")
 if learn and learn.done and not (cal.learn and cal.learn.done) then
   cal.learn = learn
   saveCal(cal)
-  print(("Learned: turn %d/%d, g %.1f, hover %.2f%%"):format(math.floor(learn.k1 or 0), math.floor(learn.k2 or 0), learn.G or 0,
+  print(("Learned: turn %d, g %.1f, hover %.2f%%"):format(math.floor(learn.kref or 0), learn.G or 0,
     (learn.hover or 0) * 100))
+end
+if learn and learn.sameAxis then
+  print("Speed sensors measure the same direction:")
+  print("re-place one (on the deck: no Shift = across")
+  print("your view, Shift = along it), then calibrate.")
 end
