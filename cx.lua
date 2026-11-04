@@ -64,6 +64,18 @@ local PROGRAMS = {
       "cx colony: only watch turtles",
     },
   },
+  pilot = {
+    needs = "computer", files = { "pilot.lua" }, libs = { "pilot" },
+    about = "autopilot of a flying platform (Aeronautics)",
+    run = "pilot calibrate, then pilot",
+    help = {
+      "On the platform's computer:",
+      " pilot calibrate   once, on its legs",
+      " pilot [height]    take off and hover",
+      "In flight: Up/Down height, L land,",
+      " any other key = all thrusters off",
+    },
+  },
   gps = {
     needs = "computer", files = { "startup.lua" }, libs = {},
     about = "GPS host: gives everyone coordinates",
@@ -75,7 +87,7 @@ local PROGRAMS = {
     },
   },
 }
-local ORDER = { "mining", "control", "buddy", "gps" }
+local ORDER = { "mining", "control", "buddy", "pilot", "gps" }
 local SOON = { { "scout", "explorer: spawners, dungeons, cities" },
                { "carve", "digs rooms and halls underground" } }
 -- Other names people type (and older names) for the same programs.
@@ -203,8 +215,8 @@ local function install(name, ...)
   if not p then
     -- short, so it stays on screen: no list dump
     print(("No program '%s'."):format(tostring(name)))
-    print("Programs: mining, control, buddy, gps")
-    print("This " .. kindHere() .. " can run: " .. (turtle and "mining" or pocket and "buddy" or "control, gps"))
+    print("Programs: mining, control, buddy, pilot, gps")
+    print("This " .. kindHere() .. " can run: " .. (turtle and "mining" or pocket and "buddy" or "control, pilot, gps"))
     return
   end
   if not p.needs:find(kindHere(), 1, true) then
