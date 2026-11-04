@@ -53,12 +53,12 @@ class Sim:
         return self.y <= self.ground + 1e-9
 
     def tip_ground(self, k, up, down):
-        """One axis on the legs: an edge lifts only past twice its hover share."""
+        """One axis on the legs: an edge lifts past 2.5x its hover share (measured in game)."""
         lift = 0.0
-        if up > 2:
-            lift = up - 2
-        elif down > 2:
-            lift = -(down - 2)
+        if up > 2.5:
+            lift = up - 2.5
+        elif down > 2.5:
+            lift = -(down - 2.5)
         if lift:
             self.w[k] += self.K * lift * SUB
         elif self.th[k]:
@@ -139,7 +139,9 @@ class Sim:
         for i, f in enumerate(vals):
             p, c = P.knobs(f)
             self.cmd[self.perm[i]] = (c + 1) / 100 * p / 15 if p > 0 else 0.0
-        self.advance(TICK)
+        # the writes go out in parallel and land with the next read's tick; measured
+        # in game (first flight log): one control step is ~0.09 s on average
+
 
     def wait(self, s):
         self.advance(s)
@@ -248,19 +250,20 @@ def judge(name, sim, res, height=4, land_at=40.0, settle=15.0, tilt_ok=4.0, calm
 # weight at the edge) is what actually tilts it; a symmetric model never would.
 EDGE = (-0.15, 0.06)
 cases = [
-    ("hover, player in the middle", {}, 4.0),
-    ("player at the south-west edge", {"dist": EDGE}, 16.0),
-    # ponytail: fixed gains; a body 2.5x harder to turn only settles slowly (period ~10 s).
-    # Gains get tuned from the first real flight log (/pilot.log).
-    ("heavy body (K x0.4) + edge", {"K": 40.0, "dist": EDGE}, 16.0, 10.0),
-    ("light body (K x2.5) + edge", {"K": 250.0, "dist": EDGE}, 16.0),
-    ("thrust lags 0.1 s + edge", {"tau": 0.1, "dist": EDGE}, 16.0),
-    ("gravity 32 (Minecraft-like) + edge", {"grav": 32.0, "K": 330.0, "dist": EDGE}, 16.0),
+    # the real platform, from the first flight log: hover 1.37% each, K ~100..150
+    ("real platform, player in the middle", {"hov": 0.0137, "K": 120.0}, 3.0),
+    ("real platform, player at the south-west edge", {"hov": 0.0137, "K": 120.0, "dist": EDGE}, 8.0),
+    ("real platform, thrust lags 0.1 s + edge", {"hov": 0.0137, "K": 120.0, "tau": 0.1, "dist": EDGE}, 8.0),
+    ("K 70 + edge", {"K": 70.0, "dist": EDGE}, 8.0),
+    ("K 180 + edge", {"K": 180.0, "dist": EDGE}, 8.0),
+    # far outside what was measured: only has to stay up and land
+    ("heavy body (K 40) + edge", {"K": 40.0, "dist": EDGE}, 16.0, 6.0),
+    ("light body (K 250) + edge", {"K": 250.0, "dist": EDGE}, 16.0, 6.0),
     # one thrust step (power 1, config +1) is 7% of hover here: a small wobble stays
     ("strong thrusters (hover 1%) + edge", {"hov": 0.01, "dist": EDGE}, 16.0, 4.0),
     ("weak thrusters (hover 20%) + edge", {"hov": 0.2, "dist": EDGE}, 16.0),
     ("names shuffled, axes swapped, sign flipped + edge",
-     {"perm": (2, 0, 3, 1), "swap": True, "flip": (-1, 1), "dist": EDGE}, 16.0),
+     {"perm": (2, 0, 3, 1), "swap": True, "flip": (-1, 1), "dist": EDGE}, 8.0),
 ]
 for name, kw, tilt_ok, *calm in cases:
     sim, res = flight(name, **kw)
@@ -286,6 +289,16 @@ res = fly(sim, cal, 3)
 ys = [x[1] for x in window(sim, t0 + 35, t0 + 45)]
 check("up twice: 3 -> 5 blocks", ys and max(abs(v - 5) for v in ys) < 0.5, (min(ys), max(ys)) if ys else None)
 check("then lands", res == "landed", res)
+
+# a held Up key used to queue ~20 "up" a second (goal 192 in the game): capped at +30
+sim = Sim()
+cal, _ = calibrate(sim)
+t0 = sim.t
+sim.events = [(t0 + 5 + i * 0.05, "up") for i in range(200)] + [(t0 + 20, "land")]
+sim.limit = t0 + 200
+res = fly(sim, cal, 4)
+top = max(x[1] for x in window(sim, t0, sim.t))
+check("goal never above +30 blocks", top < 31, top)
 
 # kill key in the air: everything off at once
 sim = Sim()

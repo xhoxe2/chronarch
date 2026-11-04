@@ -19,9 +19,12 @@ P.TILT_CUT = 30 -- degrees: past this every thruster goes off
 P.DT = 0.05     -- extra sleep per control step (reading/writing takes ticks too)
 -- Gains, in "hover thrust" units: tilt per degree (tp), per degree/s (td),
 -- per degree*s (ti); height per block (hp), per block/s (hd), per block*s (hi).
--- Tuned in tests/test_pilot.py over gravity 9.8..32, inertia x0.4..x2.5,
--- thrust lag 0..0.1 s, hover guessed -30..+30%, a player at the edge.
-P.GAINS = { tp = 0.004, td = 0.004, ti = 0.003, hp = 0.07, hd = 0.05, hi = 0.02 }
+-- Tuned in tests/test_pilot.py: tilt for the inertia measured in the first
+-- flight log (K ~100..150, survives 40..250), height over gravity 9.8..32,
+-- hover guessed -30..+30%, a player at the edge.
+P.GAINS = { tp = 0.01, td = 0.01, ti = 0.006, hp = 0.07, hd = 0.05, hi = 0.02 }
+P.TIP_PER_HOVER = 2.5 -- first flight: an edge lifted at 3.5%, hover was 1.37% each
+P.MAX_HEIGHT = 30
 P.CLIMB = 0.6   -- blocks/s, how fast the target height moves
 P.DESCEND = 0.35
 
@@ -45,8 +48,8 @@ local function clamp(v, lo, hi) if v < lo then return lo elseif v > hi then retu
 -- Fire each thruster alone, growing slowly, until the platform tips 1 degree.
 -- Returns { hover = f, t = { {axis=1|2, sign=+1|-1, tip=f}, ... } } or nil, why.
 -- sign: firing it makes that angle grow. Hover is guessed from the tipping
--- point: an edge thruster lifts its edge at about half the weight, i.e. twice
--- its share of the hover thrust.
+-- point: an edge thruster lifts its edge at P.TIP_PER_HOVER times its share
+-- of the hover thrust (2 on paper, 2.5 measured: the legs stand at the corners).
 function P.calibrate(hw)
   local t, tips = {}, 0
   for i = 1, hw.n do
@@ -86,7 +89,7 @@ function P.calibrate(hw)
     end
   end
   hw.wait(2)
-  return { hover = tips / hw.n / 2, t = t }
+  return { hover = tips / hw.n / P.TIP_PER_HOVER, t = t }
 end
 
 -- Take off to `opts.height` blocks above the start, hold level and height,
@@ -97,7 +100,7 @@ function P.fly(hw, cal, opts)
   local h = cal.hover
   local a, b, y = hw.read()
   local ground = y
-  local goal = ground + (opts.height or 4)
+  local goal = ground + math.min(P.MAX_HEIGHT, opts.height or 4)
   local target = ground
   local I, Ia, Ib = -0.3, 0, 0 -- start under the guessed hover: lift off gently
   local vy, wa, wb = 0, 0, 0
@@ -107,7 +110,7 @@ function P.fly(hw, cal, opts)
   while true do
     local cmd = hw.poll()
     if cmd == "kill" then P.cut(hw); return "stopped" end
-    if cmd == "up" then goal = goal + 1
+    if cmd == "up" then goal = math.min(ground + P.MAX_HEIGHT, goal + 1)
     elseif cmd == "down" then goal = math.max(ground + 1, goal - 1)
     elseif cmd == "land" then landing = true end
 

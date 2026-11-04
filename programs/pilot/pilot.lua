@@ -74,8 +74,9 @@ end
 
 local function keysToOrders()
   while true do
-    local _, k = os.pullEvent("key")
-    if k == keys.up then queue[#queue + 1] = "up"
+    local _, k, held = os.pullEvent("key")
+    if held then -- a key kept down repeats: count it once
+    elseif k == keys.up then queue[#queue + 1] = "up"
     elseif k == keys.down then queue[#queue + 1] = "down"
     elseif k == keys.l then queue[#queue + 1] = "land"
     else table.insert(queue, 1, "kill") end
