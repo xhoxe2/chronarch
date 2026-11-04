@@ -11,6 +11,7 @@
 |---|---|---|
 | **Create 6.0.10** | Station, Signal, Track Observer, TrainPass/StationTrainPresence события; Stock Ticker, Packager, Repackager, Frogport, Postbox, Redstone Requester, Table Cloth Shop; Display Link, Nixie Tube; Sequenced Gearshift, Speed Controller, Speed/Stress Gauge, Sticker, Creative Motor | диспетчер поездов, заказы со склада Create-логистики, табло, управление механизмами |
 | **Create: Propulsion** | Thruster, Ion/Solid Fuel/Liquid Vector Thruster, Stirling Engine, Redstone Transmission | компьютер ведёт корабль/дирижабль |
+| ↳ проверено в игре (probe, 2026-11-04) | `creative_thruster`: `setPower`, `setPowerNormalized`, `getPower`, `getTargetThrustKN/PN`, `getCurrentThrustKN/PN`, `getDisplayedThrustKN/PN`, `getThrustConfig`, `setThrustConfig`, `getAirflowMs`, `getObstruction` | |
 | **Sable** (физика Aeronautics) | правка беспроводной сети CC | модемы работают на летающих/плавающих конструкциях |
 | **Create: New Age** | Motor, Energiser, Carbon Brushes | электричество Create |
 | **Create Crafts & Additions** | Electric/Servo Motor, Modular Accumulator, Digital Adapter, Redstone Relay, Portable Energy Interface | точные моторы и аккумуляторы |
