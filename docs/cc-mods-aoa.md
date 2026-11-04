@@ -13,6 +13,8 @@
 | **Create: Propulsion** | Thruster, Ion/Solid Fuel/Liquid Vector Thruster, Stirling Engine, Redstone Transmission | компьютер ведёт корабль/дирижабль |
 | ↳ проверено в игре (probe, 2026-11-04) | `creative_thruster`: `setPower`, `setPowerNormalized`, `getPower`, `getTargetThrustKN/PN`, `getCurrentThrustKN/PN`, `getDisplayedThrustKN/PN`, `getThrustConfig`, `setThrustConfig`, `getAirflowMs`, `getObstruction` | |
 | ↳ установка двигателя (байткод + проверка в игре) | направление = куда смотришь при установке, `Shift` — наоборот; направление = куда толкает, струя в обратную сторону. Чтобы толкал вверх: смотреть вниз с `Shift`. Ключ у Creative Thruster меняет только вид пламени. Мощность ступенями по 1/15 (`setPowerNormalized(0.5)` → 7/15). Соседние двигатели одного направления сливаются в мультиблок | |
+| ↳ Gimbal Sensor (Simulated, Ponder) | своей периферии CC нет; выдаёт **редстоун** по наклону: сигнал в сторону наклона, панель параметров задаёт угол максимального сигнала; 4 стороны — 4 значения. Компьютер читает через `redstone.getAnalogInput(сторона)` | |
+| ↳ сборка тела (проверено в игре) | выделить суперклеем всё, что летит (вместе с компьютером и сборщиком), потом рычаг Physics Assembler. Тело с одним двигателем по центру переворачивается, если центр тяжести не над ним | |
 | **Sable** (физика Aeronautics) | правка беспроводной сети CC | модемы работают на летающих/плавающих конструкциях |
 | **Create: New Age** | Motor, Energiser, Carbon Brushes | электричество Create |
 | **Create Crafts & Additions** | Electric/Servo Motor, Modular Accumulator, Digital Adapter, Redstone Relay, Portable Energy Interface | точные моторы и аккумуляторы |
