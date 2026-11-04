@@ -33,7 +33,7 @@ P.MAX_HEIGHT = 30
 P.CLIMB = 0.6     -- blocks/s, target height speed (and Space/Shift)
 P.DESCEND = 0.35
 P.SPEED = 4       -- blocks/s with W/A/S/D
-P.MAX_TILT = 12   -- degrees the craft may lean to move (and brake)
+P.MAX_TILT = 10   -- degrees the craft may lean to move (and brake)
 P.TILT_RATE = 15  -- degrees/s: the wanted lean changes no faster (no jolts)
 P.TIP_PER_HOVER = 2.5 -- first flight: an edge lifted at 3.5%, hover was 1.37% each
 -- Tilt loop: bandwidth (rad/s) and damping. Before the scan the craft's turn
@@ -48,7 +48,7 @@ P.RATE_F = 0.8    -- weight of the newest sample in the turn-rate estimate
 -- scaled by the gravity the scan measures.
 P.HP, P.HD, P.HI = 0.07, 0.05, 0.02
 P.VEL_K = 0.8     -- 1/s: how fast speed follows the wanted speed
-P.ACCEL = 2.0     -- blocks/s^2: the wanted speed grows and falls no faster (smooth keys)
+P.ACCEL = 1.5     -- blocks/s^2: the wanted speed grows and falls no faster (smooth keys)
 P.LEAK = 0.05     -- 1/s: speed no sensor sees fades (air drag, and drift of the sum)
 P.SENSOR_K = 20   -- 1/s: how hard a speed sensor pulls the worked-out speed (20: takes it as is)
 P.LEVEL_RATE = 4  -- degrees/s: from its lean on uneven ground to level after liftoff
@@ -223,7 +223,8 @@ function P.calibrate(hw)
       minus = minus or c < -0.4
     end
     if not (plus and minus) then
-      return nil, ("cannot level axis %d: no thruster lifts one of its sides"):format(axis)
+      local side = axis == 1 and (plus and "south" or "north") or (plus and "east" or "west")
+      return nil, ("cannot level axis %d: nothing lifts the %s side"):format(axis, side), t
     end
   end
   settle(hw)
@@ -243,6 +244,134 @@ function P.forwardFrom(alt, side)
   local i
   if math.abs(south) > math.abs(east) then i = south > 0 and 3 or 1 else i = east > 0 and 2 or 4 end
   return ORDER[(i - 1 + turn) % 4 + 1]
+end
+
+-- Craft report ----------------------------------------------------------------
+
+-- A compass direction (of the craft as assembled) said the pilot's way, when
+-- it is known where the screen is: "front", "back", "left", "right".
+local SIDES = { [0] = "front", "right", "back", "left" }
+local function pilotSide(dir, forward)
+  local idx = { north = 0, east = 1, south = 2, west = 3 }
+  if not (forward and idx[forward] and idx[dir]) then return dir end
+  return SIDES[(idx[dir] - idx[forward]) % 4]
+end
+-- which side a lifter raises, from its (c1, c2): c1 > 0 raises north, c2 > 0 west
+local function liftSide(c1, c2)
+  local d = ""
+  if c1 > 0.4 then d = "north" elseif c1 < -0.4 then d = "south" end
+  if c2 > 0.4 then d = d .. (d ~= "" and "-" or "") .. "west" elseif c2 < -0.4 then d = d .. (d ~= "" and "-" or "") .. "east" end
+  return d
+end
+local function sayDir(d, forward)
+  local out = {}
+  for part in d:gmatch("[^-]+") do out[#out + 1] = pilotSide(part, forward) end
+  return table.concat(out, "-")
+end
+
+-- What is on board and what it gives the pilot. devices = { {name, type,
+-- side}, ... } (every peripheral the computer sees), cal = the ground check
+-- (nil before it), learn = the air scan (nil before it). Returns lines (each
+-- fits a 51-wide screen) and caps = { height, level, move, hold, turn }, each
+-- { ok = true/false, why = text }.
+function P.report(devices, cal, learn)
+  learn = learn or {}
+  local fwd = cal and cal.forward
+  local lines, caps = {}, {}
+  local idx, count = {}, { thr = 0, gimbal = 0, alt = 0, speed = 0 }
+  for i, n in ipairs(cal and cal.names or {}) do idx[n] = i end
+  local altSide
+  local speedK = 0
+  lines[#lines + 1] = ("ON BOARD (%d devices):"):format(#devices)
+  for _, d in ipairs(devices) do
+    local what
+    local t = d.type or "?"
+    if t:find("thruster") then
+      count.thr = count.thr + 1
+      local x = cal and idx[d.name] and cal.t[idx[d.name]]
+      local c = x and learn.c and learn.c[idx[d.name]]
+      if not x then what = "thruster: not checked yet"
+      elseif x.kind == "lift" then
+        local side = c and liftSide(c[1], c[2]) or liftSide(x.c1, x.c2)
+        what = side == "" and "thruster: lifts the middle" or ("thruster: lifts " .. sayDir(side, fwd) .. " side")
+      elseif x.kind == "side" then
+        local v = learn.side and learn.side[idx[d.name]]
+        if v then
+          local dir = math.abs(v[1]) > math.abs(v[2]) and (v[1] > 0 and "south" or "north") or (v[2] > 0 and "east" or "west")
+          what = "thruster: pushes to the " .. pilotSide(dir, fwd)
+        else
+          what = "thruster: pushes sideways"
+        end
+      else
+        what = "thruster: NO EFFECT (down? blocked?)"
+      end
+    elseif t == "gimbal_sensor" then
+      count.gimbal = count.gimbal + 1
+      what = "gimbal: tilt, for levelling"
+    elseif t == "altitude_sensor" then
+      count.alt = count.alt + 1
+      altSide = d.side
+      what = "altitude: height" .. ((d.side == "top" or d.side == "bottom") and "" or ", finds the front")
+    elseif t == "velocity_sensor" then
+      count.speed = count.speed + 1
+      speedK = speedK + 1
+      local m = learn.Mrows and learn.Mrows[speedK]
+      if not learn.done then what = "speed: checked in the first flight"
+      elseif not m then what = "speed: does not answer (vertical?)"
+      else
+        local dir = math.abs(m[1]) > math.abs(m[2]) and "north" or "east"
+        local a = pilotSide(dir, fwd)
+        what = "speed: sees " .. ((a == "front" or a == "back") and "front-back" or (a == "left" or a == "right")
+          and "left-right" or (dir == "north" and "north-south" or "east-west"))
+      end
+    elseif t == "modem" then
+      what = "network"
+    else
+      what = t .. ": not used yet"
+    end
+    local label = (d.side or d.name):gsub("^creative_", "")
+    lines[#lines + 1] = (" %-12s %s"):format(label:sub(1, 12), what):sub(1, 51)
+  end
+
+  -- what the pilot gets
+  local function cap(key, ok, why) caps[key] = { ok = ok, why = why } end
+  local lift = false
+  for _, x in ipairs(cal and cal.t or {}) do lift = lift or x.kind == "lift" end
+  if count.alt == 0 then cap("height", false, "no Altitude Sensor by the computer")
+  elseif count.thr == 0 then cap("height", false, "no thrusters on the network")
+  elseif not cal then cap("height", false, "craft not checked yet")
+  elseif not lift then cap("height", false, "no thruster lifts the craft")
+  else cap("height", true, "Space/Shift, arrows 1 block") end
+  if count.gimbal == 0 then cap("level", false, "no Gimbal Sensor by the computer")
+  elseif not cal then cap("level", false, "craft not checked yet")
+  elseif cal.why then cap("level", false, cal.why)
+  else cap("level", true, "levels itself") end
+  local sides = learn.side and next(learn.side) ~= nil
+  if not caps.level.ok then cap("move", false, "needs levelling first")
+  elseif sides then cap("move", true, "WASD: side thrusters + lean")
+  else cap("move", true, "WASD by leaning (side thrusters would not lean)") end
+  if not caps.level.ok then cap("hold", false, "needs levelling first")
+  elseif not learn.done then cap("hold", true, "after the first flight learns it")
+  elseif (learn.speedSeen or 0) >= 2 then cap("hold", true, "exact: speed sensed both ways")
+  elseif learn.speedSeen == 1 then cap("hold", true, "1 way sensed, 1 worked out")
+  else cap("hold", true, "worked out (2 Velocity Sensors: exact)") end
+  cap("turn", false, "needs thrusters that twist it and a heading sensor")
+  if not fwd and caps.move.ok then caps.move.why = "WASD after the 1st flight finds the front" end
+
+  lines[#lines + 1] = "CONTROLS:"
+  for _, k in ipairs({ { "height", "Up/down" }, { "level", "Level" }, { "move", "Move" }, { "hold", "Hold still" },
+    { "turn", "Turn" } }) do
+    local c = caps[k[1]]
+    -- long reasons wrap under themselves
+    local head, rest = (" %-10s %-3s "):format(k[2], c.ok and "YES" or "NO"), c.why
+    while #head + #rest > 51 do
+      local cut = rest:sub(1, 51 - #head):match("^.*() ") or (51 - #head)
+      lines[#lines + 1] = head .. rest:sub(1, cut - 1)
+      head, rest = (" "):rep(16), rest:sub(cut + 1)
+    end
+    lines[#lines + 1] = head .. rest
+  end
+  return lines, caps
 end
 
 -- How many directions of the speed the sensors cover: 0, 1 or 2.
@@ -389,7 +518,7 @@ function P.fly(hw, cal, opts)
       local b1, s1 = fitPush(d, "a")
       local b2, s2 = fitPush(d, "b")
       if not (b1 and b2) then return true end
-      if math.max(s1, s2) < 0.4 then return false end -- too small to see: harder
+      if math.max(s1, s2) < 0.25 then return false end -- too small to see: harder
       Bm[i] = { b1, b2 }
       return true
     end }
@@ -466,7 +595,7 @@ function P.fly(hw, cal, opts)
     return c and { c[7], c[8] }
   end
   local function moveTest(axis)
-    return { amp = 2, dur = 3.4, analyse = function(d)
+    return { amp = 1.2, dur = 3.4, analyse = function(d)
       moveData[axis] = d
       if axis == 2 and moveData[1] then
         learn.alt = locate()
@@ -535,7 +664,7 @@ function P.fly(hw, cal, opts)
     queue[#queue + 1] = "rest"
     for _, i in ipairs(lifters) do
       tests["t" .. i] = thrTest(i)
-      tests["t" .. i].amp = math.max(0.2, step)
+      tests["t" .. i].amp = math.max(0.12, step)
       queue[#queue + 1] = "t" .. i
       queue[#queue + 1] = "rest" -- level out again before the next one
     end
