@@ -27,6 +27,7 @@
 local P = {}
 
 P.TILT_CUT = 30   -- degrees: past this every thruster goes off
+P.SCAN_VERSION = 3 -- saved scans of other versions are scanned again
 P.DT = 0.05       -- extra sleep per control step (reading/writing takes ticks too)
 P.MAX_HEIGHT = 30
 P.CLIMB = 0.6     -- blocks/s, target height speed (and Space/Shift)
@@ -48,7 +49,8 @@ P.RATE_F = 0.8    -- weight of the newest sample in the turn-rate estimate
 P.HP, P.HD, P.HI = 0.07, 0.05, 0.02
 P.VEL_K = 0.8     -- 1/s: how fast speed follows the wanted speed
 P.ACCEL = 2.0     -- blocks/s^2: the wanted speed grows and falls no faster (smooth keys)
-P.LEAN = 4        -- degrees of lean per key without a speed picture
+P.LEAK = 0.05     -- 1/s: speed no sensor sees fades (air drag, and drift of the sum)
+P.SENSOR_K = 20   -- 1/s: how hard a speed sensor pulls the worked-out speed (20: takes it as is)
 P.LEVEL_RATE = 4  -- degrees/s: from its lean on uneven ground to level after liftoff
 P.POS_K = 0.15    -- 1/s: pulls back to where you stopped
 P.LAG = 0.05      -- sensor values are about a tick old
@@ -184,7 +186,6 @@ end
 
 function P.calibrate(hw)
   local t, tips, n = {}, 0, 0
-  local rises = {} -- each tip: lean (deg) and how much the Altitude Sensor rose
   for i = 1, hw.n do
     local s0 = settle(hw)
     local f, got = 0.0007, nil
@@ -202,7 +203,6 @@ function P.calibrate(hw)
       if m > 1 then
         got = { kind = "lift", c1 = d1 / m, c2 = d2 / m, tip = f }
         tips, n = tips + f, n + 1
-        rises[#rises + 1] = { d1, d2, s.y - s0.y }
       elseif s.y - s0.y > 0.3 then -- rose whole; a slow craft may still lean a little
         if m > 0.2 then got = { kind = "lift", c1 = d1 / m, c2 = d2 / m, tip = f / 1.6 }
         else got = { kind = "lift", c1 = 0, c2 = 0, tip = f } end
@@ -227,24 +227,7 @@ function P.calibrate(hw)
     end
   end
   settle(hw)
-  return { hover = tips / math.max(n, 1) / P.TIP_PER_HOVER, t = t, alt = P.locate(rises) }
-end
-
--- Where the Altitude Sensor sits (blocks south, east of the craft's middle),
--- from the tips of the ground scan. Tipped by lean (X, Z) about an edge of
--- the legs, a point rises by  lean * (edge distance - its offset toward the
--- side that went down):  rise = r * (-X * south - Z * east + |lean| * edge),
--- r = pi/180. Three unknowns, one equation per tip (need 3+).
-function P.locate(rises)
-  if #rises < 3 then return nil end
-  local r, X, Y = math.pi / 180, {}, {}
-  for _, q in ipairs(rises) do
-    X[#X + 1] = { -q[1] * r, -q[2] * r, math.sqrt(q[1] * q[1] + q[2] * q[2]) * r }
-    Y[#Y + 1] = q[3]
-  end
-  local c = P.lsq(X, Y)
-  if not c then return nil end
-  return { c[1], c[2] }
+  return { hover = tips / math.max(n, 1) / P.TIP_PER_HOVER, t = t }
 end
 
 -- The way W flies, from where the Altitude Sensor sits and on which side of
@@ -260,6 +243,17 @@ function P.forwardFrom(alt, side)
   local i
   if math.abs(south) > math.abs(east) then i = south > 0 and 3 or 1 else i = east > 0 and 2 or 4 end
   return ORDER[(i - 1 + turn) % 4 + 1]
+end
+
+-- How many directions of the speed the sensors cover: 0, 1 or 2.
+function P.seen(rows, gk)
+  local a, b, c = 0, 0, 0
+  for _, m in pairs(rows or {}) do
+    local R1, R2 = m[1] / gk, m[2] / gk
+    a, b, c = a + R1 * R1, b + R1 * R2, c + R2 * R2
+  end
+  if a + c < 0.1 then return 0 end
+  return (a * c - b * b) > 0.1 * ((a + c) / 2) ^ 2 and 2 or 1
 end
 
 -- Flight ---------------------------------------------------------------------
@@ -293,8 +287,8 @@ end
 function P.fly(hw, cal, opts)
   opts = opts or {}
   local learn = {}
-  -- a scan from an older version (no levers measured) is not trusted at all
-  if cal.learn and cal.learn.kref then
+  -- a scan from an older version is not trusted at all: scan again
+  if cal.learn and cal.learn.v == P.SCAN_VERSION then
     for k, v in pairs(cal.learn) do learn[k] = v end
   end
   local h = learn.hover or cal.hover
@@ -310,13 +304,13 @@ function P.fly(hw, cal, opts)
   end
   local K = learn.kref and { learn.kref, learn.kref } or { P.K_GUESS, P.K_GUESS }
   local w = P.W_PRIOR
-  local Minv = learn.M and inv2(learn.M)
   local gk = G * math.pi / 180 -- blocks/s^2 per degree of lean
-  if learn.M then
-    local c1 = math.sqrt(learn.M[1][1] ^ 2 + learn.M[2][1] ^ 2)
-    local c2 = math.sqrt(learn.M[1][2] ^ 2 + learn.M[2][2] ^ 2)
-    gk = (c1 + c2) / 2
-  end
+  -- The craft's speed (south, east): worked out from physics - a lean of X
+  -- degrees pushes it by G*sin(X) - and corrected by every speed sensor along
+  -- the direction that sensor happens to see (learn.Mrows, from the lean
+  -- tests; any number of sensors, set any way). What no sensor sees runs on
+  -- physics alone and fades slowly.
+  local vS, vE, lastF = 0, 0, {}
   local side = learn.side or {} -- [i] = { s, e }: push per unit thrust (blocks/s^2)
   local dirs = P.COMPASS[opts.forward or "north"] or P.COMPASS.north
   local D1, D2 = P.mixer(mixCal)
@@ -326,7 +320,7 @@ function P.fly(hw, cal, opts)
     if isLift[i] then lifters[#lifters + 1] = i end
   end
   local Bm = {} -- measured: lifter i -> { turn X, turn Z } per unit of its thrust
-  local warn = learn.sameAxis and "SPEED SENSORS MEASURE THE SAME WAY" or nil
+  local warn = nil
 
   local s = hw.read()
   local ground = s.y
@@ -343,6 +337,7 @@ function P.fly(hw, cal, opts)
   local spPrev = { s.a, s.b }
   local rest = { s.a, s.b } -- the lean it stands with on uneven ground
   local wS, wE, holding = 0, 0, false -- wanted speed (slews smoothly), holding still
+  local wasActive, recovering = false, false
   local settled, baseSum, baseN = 0, 0, 0
   local queue, T = nil, nil -- scan tests still to run, the running one
   local scanned = learn.kref ~= nil or opts.noscan
@@ -383,6 +378,7 @@ function P.fly(hw, cal, opts)
     if not g then return true end
     if seen < 0.05 then return false end -- too small to see: push harder
     if g > 2 and g < 60 then learn.G = g; G = g; gk = g * math.pi / 180 end
+    learn.speedSeen = P.seen(learn.Mrows, gk)
     return true
   end }
   -- One lifter at a time gets a little more, then less thrust, the craft
@@ -430,8 +426,9 @@ function P.fly(hw, cal, opts)
   -- fool it.
   local moveData = {}
   local function fitM()
-    local M = { {}, {} }
-    for i = 1, 2 do
+    local M = {}
+    for i = 1, #moveData[1][1].v do
+      M[i] = {}
       local X, Y = {}, {}
       for k = 1, 2 do
         local d, i1, i2 = moveData[k], 0, 0
@@ -451,22 +448,40 @@ function P.fly(hw, cal, opts)
     end
     return M
   end
+  -- Where the Altitude Sensor sits (blocks south, east of the middle): in
+  -- the air the craft turns about its middle, so leaning by X, Z the sensor
+  -- goes down by sin(X) * south + sin(Z) * east. Height thrust is frozen during
+  -- the lean tests; drift up or down is soaked up by 1, t, t^2 per test.
+  local function locate()
+    local X, Y, r = {}, {}, math.pi / 180
+    for k = 1, 2 do
+      for _, p in ipairs(moveData[k]) do
+        local row = { 0, 0, 0, 0, 0, 0, -math.sin(p.a * r), -math.sin(p.b * r) }
+        row[k], row[k + 2], row[k + 4] = 1, p.t, p.t * p.t
+        X[#X + 1] = row
+        Y[#Y + 1] = p.y
+      end
+    end
+    local c = P.lsq(X, Y)
+    return c and { c[7], c[8] }
+  end
   local function moveTest(axis)
     return { amp = 2, dur = 3.4, analyse = function(d)
       moveData[axis] = d
       if axis == 2 and moveData[1] then
-        local M = fitM()
-        local r1 = M and math.sqrt(M[1][1] ^ 2 + M[1][2] ^ 2) or 0
-        local r2 = M and math.sqrt(M[2][1] ^ 2 + M[2][2] ^ 2) or 0
-        local det = M and math.abs(M[1][1] * M[2][2] - M[1][2] * M[2][1]) or 0
-        if r1 > 0 and r2 > 0 and det > 0.4 * r1 * r2 then -- the two sensors see different ways
-          learn.M, Minv, learn.sameAxis = M, inv2(M), nil
-          gk = (math.sqrt(M[1][1] ^ 2 + M[2][1] ^ 2) + math.sqrt(M[1][2] ^ 2 + M[2][2] ^ 2)) / 2
-        else
-          -- both measure (nearly) one direction, or one is dead: no holding still
-          learn.M, Minv, learn.sameAxis = nil, nil, true
-          warn = "SPEED SENSORS MEASURE THE SAME WAY"
+        learn.alt = locate()
+        local f = not opts.forwardManual and P.forwardFrom(learn.alt, opts.altSide)
+        if f then learn.forward, dirs = f, P.COMPASS[f] end
+      end
+      if axis == 2 and moveData[1] and #s.v >= 1 then
+        -- each sensor: how fast its reading changes per degree of lean X, Z.
+        -- One that does not answer a lean (vertical, broken) is left out.
+        local rows = {}
+        for i, m in ipairs(fitM() or {}) do
+          if math.sqrt(m[1] ^ 2 + m[2] ^ 2) > 0.3 * gk then rows[i] = m end
         end
+        learn.Mrows = rows
+        learn.speedSeen = P.seen(rows, gk)
       end
       return true
     end }
@@ -477,25 +492,33 @@ function P.fly(hw, cal, opts)
   -- the craft's own lean does to the speed (M) is taken out first.
   local function sideTest(i) -- first push: half of one lifter's hover thrust
     return { amp = 0.5 * h, dur = 2.2, thruster = i, analyse = function(d)
-      if not (Minv and learn.M) then return true end
-      local M, i1, i2, prev = learn.M, 0, 0, nil
+      local rows = learn.Mrows or {}
+      if not next(rows) then return true end
+      local i1, i2, prev = 0, 0, nil
       for _, p in ipairs(d) do
         if prev then
           i1 = i1 + 0.5 * (p.a + prev.a) * (p.t - prev.t)
           i2 = i2 + 0.5 * (p.b + prev.b) * (p.t - prev.t)
         end
-        p.r = { p.v[1] - M[1][1] * i1 - M[1][2] * i2, p.v[2] - M[2][1] * i1 - M[2][2] * i2 }
+        p.r = {}
+        for k, m in pairs(rows) do p.r[k] = p.v[k] - m[1] * i1 - m[2] * i2 end
         prev = p
       end
-      local da = {}
-      for k = 1, 2 do
+      -- the push in (south, east) that best explains what the sensors saw
+      local A, bb = { { 1e-3, 0 }, { 0, 1e-3 } }, { 0, 0 }
+      for k, m in pairs(rows) do
         local s1 = slope(d, "r", k, 0.2, 0.8)
         local s2 = slope(d, "r", k, 1.5, 2.2)
         if not (s1 and s2) then return true end
-        da[k] = s2 - s1
+        local R1, R2, da = m[1] / gk, m[2] / gk, s2 - s1
+        A[1][1], A[1][2], A[2][2] = A[1][1] + R1 * R1, A[1][2] + R1 * R2, A[2][2] + R2 * R2
+        bb[1], bb[2] = bb[1] + R1 * da, bb[2] + R2 * da
       end
-      local aS = gk * (Minv[1][1] * da[1] + Minv[1][2] * da[2])
-      local aE = gk * (Minv[2][1] * da[1] + Minv[2][2] * da[2])
+      A[2][1] = A[1][2]
+      local Ai = inv2(A)
+      if not Ai then return true end
+      local aS = Ai[1][1] * bb[1] + Ai[1][2] * bb[2]
+      local aE = Ai[2][1] * bb[1] + Ai[2][2] * bb[2]
       if math.sqrt(aS * aS + aE * aE) < 0.15 then return false end -- too weak to see: harder
       side[i] = { aS / T.amp, aE / T.amp }
       learn.side = side
@@ -507,10 +530,8 @@ function P.fly(hw, cal, opts)
     -- pushes of at least 2 thrust steps, or the steps would hide them
     local step = 2 / 1500 / h
     tests.lift.amp = math.max(0.15, step)
-    -- speed sensors first: until then nothing stops the craft drifting
-    queue = {}
-    if #s.v >= 2 then queue = { "m1", "m2" } end
-    queue[#queue + 1] = "lift"
+    -- lean tests first: they find the screen side and the speed sensors
+    queue = { "m1", "m2", "lift" }
     queue[#queue + 1] = "rest"
     for _, i in ipairs(lifters) do
       tests["t" .. i] = thrTest(i)
@@ -519,7 +540,7 @@ function P.fly(hw, cal, opts)
       queue[#queue + 1] = "rest" -- level out again before the next one
     end
     queue[#queue + 1] = "mix"
-    if #s.v >= 2 then
+    if #s.v >= 1 then
       for i, x in ipairs(cal.t) do
         if x.kind ~= "lift" then
           tests["side" .. i] = sideTest(i)
@@ -558,6 +579,7 @@ function P.fly(hw, cal, opts)
     elseif cmd == "down" then goal = math.max(ground + 1, goal - 1)
     elseif cmd == "land" then landing = true; T = nil; queue = {} end
     local held = hw.held and hw.held() or {}
+    if not (learn.done or opts.noscan) then held = {} end -- hands off until it knows the craft
 
     s = hw.read()
     local now = hw.clock()
@@ -604,6 +626,7 @@ function P.fly(hw, cal, opts)
       baseSum, baseN = baseSum + base, baseN + 1
     end
     if not scanned and not T and settled > 3 then
+      learn.v = P.SCAN_VERSION
       if baseN > 0 then -- same thrust, now counted from the real hover
         learn.hover = baseSum / baseN
         I = h * (1 + I) / learn.hover - 1
@@ -656,7 +679,7 @@ function P.fly(hw, cal, opts)
 
     -- height
     local e = target - y
-    local frozen = T and T.name == "lift"
+    local frozen = T and (T.name == "lift" or T.name == "m1" or T.name == "m2")
     if not frozen then I = clamp(I + hi() * e * dt, -0.7, 1.5) end
     local base
     if frozen then base = h * (1 + I) + inj.base
@@ -673,20 +696,42 @@ function P.fly(hw, cal, opts)
       kS = P.SPEED * (dirs.f[1] * fwd + dirs.r[1] * right)
       kE = P.SPEED * (dirs.f[2] * fwd + dirs.r[2] * right)
     end
-    local dv = P.ACCEL * dt
+    local dv = P.ACCEL * dt * (recovering and 0.5 or 1)
     wS = wS + clamp(kS - wS, -dv, dv)
     wE = wE + clamp(kE - wE, -dv, dv)
-    if not T and airborne then
-      if Minv and #s.v >= 2 then
-        local vS = gk * (Minv[1][1] * s.v[1] + Minv[1][2] * s.v[2])
-        local vE = gk * (Minv[2][1] * s.v[1] + Minv[2][2] * s.v[2])
-        if math.sqrt(vS * vS + vE * vE) > 2 * P.SPEED + 2 then
-          -- far faster than ever asked: the speed picture is wrong. Stop
-          -- trusting it for this flight, just keep level.
-          Minv, warn = nil, "SPEED RUNAWAY: holding level only"
-          vS, vE = 0, 0
-        end
-        pS, pE = pS + vS * dt, pE + vE * dt
+    if recovering and math.abs(wS) + math.abs(wE) < 0.05 then recovering = false end
+    if airborne then
+      local r = math.pi / 180
+      vS = vS + (G * math.sin(a * r) - P.LEAK * vS) * dt
+      vE = vE + (G * math.sin(b * r) - P.LEAK * vE) * dt
+      for i, v in pairs(side) do
+        vS, vE = vS + v[1] * (lastF[i] or 0) * dt, vE + v[2] * (lastF[i] or 0) * dt
+      end
+      for i, m in pairs(learn.Mrows or {}) do
+        local R1, R2 = m[1] / gk, m[2] / gk
+        local innov = (s.v[i] or 0) - (R1 * vS + R2 * vE)
+        local k = math.min(1, P.SENSOR_K * dt) / (R1 * R1 + R2 * R2)
+        vS, vE = vS + k * R1 * innov, vE + k * R2 * innov
+      end
+      if math.sqrt(vS * vS + vE * vE) > 2 * P.SPEED + 2 then
+        -- far faster than ever asked: the speed picture is wrong. Stop trusting
+        -- the sensors for this flight, keep the physics only.
+        learn.Mrows, vS, vE, warn = nil, 0, 0, "SPEED SENSORS IGNORED (runaway)"
+      end
+      pS, pE = pS + vS * dt, pE + vE * dt
+    else
+      vS, vE = 0, 0
+    end
+    -- only once it knows the craft, and has come out of its starting lean
+    local levelled = math.abs(rest[1]) < 0.5 and math.abs(rest[2]) < 0.5
+    local active = not T and airborne and levelled and (learn.done or opts.noscan)
+    if active and not wasActive then
+      -- taking over a craft that is already moving: slow it down gently
+      wS, wE, holding, recovering = vS, vE, false, true
+    end
+    wasActive = active
+    if active then
+      do
         -- moving: follow the wanted speed; stopped: stay where it came to rest
         local still = kS == 0 and kE == 0 and math.abs(wS) + math.abs(wE) < 0.05
         if still and not holding then tS, tE, holding = pS, pE, true end
@@ -701,10 +746,6 @@ function P.fly(hw, cal, opts)
         local aE = clamp(P.VEL_K * (uE - vE), -lim, lim)
         sideF, aS, aE = sideShare(aS, aE)
         sp[1], sp[2] = aS / gk, aE / gk
-      else
-        -- no speed picture: lean while a key is held, level when let go
-        sp[1] = P.LEAN * wS / P.SPEED
-        sp[2] = P.LEAN * wE / P.SPEED
       end
     end
     for k = 1, 2 do
@@ -765,11 +806,12 @@ function P.fly(hw, cal, opts)
       end
     end
     hw.write(fs)
+    lastF = fs
 
     if hw.show and now >= nextShow then
       nextShow = now + 0.5
       hw.show({ y = y - ground, goal = goal - ground, a = a, b = b, base = base / h, landing = landing,
-        scan = T and T.name, learned = learn.done, warn = warn })
+        scan = T and T.name, learned = learn.done, warn = warn, seen = learn.speedSeen })
     end
     hw.wait(P.DT)
   end

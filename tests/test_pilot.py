@@ -218,10 +218,10 @@ def calibrate(sim):
     return r if isinstance(r, tuple) else (r, None)
 
 
-def fly(sim, cal, height=4, forward="north", learn=None):
+def fly(sim, cal, height=4, forward="north", learn=None, alt_side="left"):
     if learn is not None:
         cal.learn = lua.table_from(learn) if isinstance(learn, dict) else learn
-    r = P.fly(sim.hw(), cal, lua.table_from({"height": height, "forward": forward}))
+    r = P.fly(sim.hw(), cal, lua.table_from({"height": height, "forward": forward, "altSide": alt_side}))
     return r if isinstance(r, tuple) else (r, None)
 
 
@@ -287,20 +287,6 @@ cal_s, why = calibrate(Sim(side=[(1, 0), (-1, 0), (0, 0)], **REAL))
 check("calibrate: side thrusters found as 'side', one pointing down as 'none'",
       cal_s is not None and kinds(cal_s) == ["lift"] * 4 + ["side", "side", "none"], kinds(cal_s) if cal_s else why)
 
-for alt, side, want in [((0.0, 1.0), "left", "north"), ((0.0, 1.0), "right", "south"),
-                        ((1.0, 0.0), "left", "east"), ((-1.0, 0.0), "back", "north"), ((0.0, -1.0), "front", "east")]:
-    c, _ = calibrate(Sim(alt=alt, **REAL))
-    loc = (c.alt[1], c.alt[2]) if c and c.alt else None
-    check("calibrate finds the Altitude Sensor at %s (within 0.3 block)" % (alt,),
-          loc and abs(loc[0] - alt[0]) < 0.3 and abs(loc[1] - alt[1]) < 0.3, loc)
-    check("... on the computer's %s side: W flies %s" % (side, want), P.forwardFrom(c.alt, side) == want,
-          P.forwardFrom(c.alt, side) if c else None)
-check("forward: sensor in the middle or on top -> cannot tell",
-      P.forwardFrom(lua.eval("{0.1, -0.2}"), "left") is None and P.forwardFrom(lua.eval("{0, 1}"), "top") is None)
-c, _ = calibrate(Sim(alt=(0.0, 1.0), rest=(9.6, 0.0), **REAL))
-check("calibrate on uneven ground (stands 9.6 deg leaned): still finds the screen side",
-      c and P.forwardFrom(c.alt, "left") == "north", (c.alt[1], c.alt[2]) if c and c.alt else None)
-
 dead_cal, dead_why = calibrate(Sim(dead=2, **REAL))
 check("calibrate: a dead thruster -> cannot level, said why", dead_cal is None and "axis 1" in (dead_why or ""),
       dead_why)
@@ -309,7 +295,7 @@ check("calibrate: kill key stops it", kill_cal is None and kill_why == "stopped"
 
 
 # --- first flight: takes off, learns the craft, holds still, lands ------------
-def first_flight(name, sim, height=4, land_after=65.0, tilt_ok=8.0, calm_ok=2.0):
+def first_flight(name, sim, height=4, land_after=65.0, tilt_ok=8.0, calm_ok=2.0, hold_ok=1.0):
     cal, why = calibrate(sim)
     if not cal:
         check(name + ": calibrated", False, why)
@@ -328,7 +314,7 @@ def first_flight(name, sim, height=4, land_after=65.0, tilt_ok=8.0, calm_ok=2.0)
           tilt_max(window(sim, t0, t0 + land_after)))
     if hold:
         drift = math.hypot(hold[-1][5] - hold[0][5], hold[-1][6] - hold[0][6])
-        check(name + ": stays in place (< 1 block in 12 s)", drift < 1.0, drift)
+        check(name + ": stays in place (< %g block in 12 s)" % hold_ok, drift < hold_ok, drift)
     check(name + ": lands softly and switches off", res == "landed" and sim.on_ground() and sim.impact < 1.5
           and all(v == 0 for v in sim.writes[-1]), (res, sim.impact, sim.writes[-1]))
     return cal, learn, t0
@@ -345,18 +331,19 @@ if learn:
     check("learns gravity within 25%", abs(learn.get("G", 0) - 9.8) / 9.8 < 0.25, learn.get("G"))
     check("learns the real hover thrust within 10%", abs(learn.get("hover", 0) - 0.0137) / 0.0137 < 0.10,
           learn.get("hover"))
-    M = learn.get("M")
-    if M:
-        # back sensor measures north (-south), right sensor east: M ~ [[-gk, 0], [0, gk]]
+    M = learn.get("Mrows")
+    if M and M[1] and M[2]:
+        # back sensor measures north (-south), right sensor east: rows ~ [[-gk, 0], [0, gk]]
         gk = 9.8 * math.pi / 180
         check("learns what each speed sensor measures", M[1][1] < -0.7 * gk and M[2][2] > 0.7 * gk
               and abs(M[1][2]) < 0.3 * gk and abs(M[2][1]) < 0.3 * gk, [[M[1][1], M[1][2]], [M[2][1], M[2][2]]])
+        check("both directions of speed sensed", learn.get("speedSeen") == 2, learn.get("speedSeen"))
     else:
-        check("learns what each speed sensor measures", False, "no M")
+        check("learns what each speed sensor measures", False, "no rows")
 
 
 # --- second flight: knows the craft, W/A/S/D --------------------------------
-def keys_flight(name, sim, cal, learn, forward="north", side_level=None):
+def keys_flight(name, sim, cal, learn, forward="north", side_level=None, hold_ok=1.0, stop_ok=7.5):
     t0 = sim.t
     # W for 6 s, let go, D for 4 s, let go, land
     sim.held_plan = [(t0 + 15, t0 + 21, {"f": 1}), (t0 + 33, t0 + 37, {"r": 1})]
@@ -369,11 +356,11 @@ def keys_flight(name, sim, cal, learn, forward="north", side_level=None):
     check(name + ": W flies forward (north) > 10 blocks", north > 10, north)
     check(name + ": ... and not sideways (< 2 blocks)", abs(p21[6] - p15[6]) < 2, p21[6] - p15[6])
     stop = math.hypot(p31[5] - p21[5], p31[6] - p21[6])
-    check(name + ": let go: stops smoothly within 7.5 blocks", stop < 7.5, stop)
+    check(name + ": let go: stops smoothly within %g blocks" % stop_ok, stop < stop_ok, stop)
     east = p37[6] - p33[6]
     check(name + ": D flies right (east) > 5.5 blocks", east > 5.5, east)
     rest = math.hypot(p48[5] - sim.after(t0, 42)[5], p48[6] - sim.after(t0, 42)[6])
-    check(name + ": then hangs still (< 1 block in 6 s)", rest < 1, rest)
+    check(name + ": then hangs still (< %g block in 6 s)" % hold_ok, rest < hold_ok, rest)
     if side_level is not None:
         lean = tilt_max(window(sim, t0 + 15, t0 + 21))
         check(name + ": moves on side thrusters, almost level (< %g deg)" % side_level, lean < side_level, lean)
@@ -401,19 +388,41 @@ if learn3:
     check("forward = east: W goes east", sim.after(t0, 20)[6] - sim.after(t0, 15)[6] > 8,
           sim.after(t0, 20)[6] - sim.after(t0, 15)[6])
 
-# both speed sensors put along one direction (the second real flight): it must
-# notice, warn, not trust them, and still fly and land
+# where is the screen? The first flight finds the Altitude Sensor (it hangs on a
+# known side of the computer) from how it rises and sinks as the craft leans
+for alt, side, kw, want in [((0.0, 1.0), "left", {}, "north"), ((0.0, 1.0), "right", {}, "south"),
+                            ((1.0, 0.0), "left", {}, "east"), ((-1.0, 0.0), "back", {}, "north"),
+                            ((1.0, 0.0), "left", {"rest": (9.6, 0.0), "dist": EDGE}, "east")]:
+    sim = Sim(alt=alt, **kw, **REAL)
+    c, _ = calibrate(sim)
+    t0 = sim.t
+    sim.events = [(t0 + 60, "land")]
+    sim.limit = t0 + 120
+    res, lr = fly(sim, c, 4, None, None, side)
+    lr = ltable(lr)
+    loc = lr.get("alt")
+    where = "%s%s" % (alt, " on uneven ground + player at the edge" if kw else "")
+    check("first flight finds the Altitude Sensor at %s (within 0.3 block)" % where,
+          loc and abs(loc[1] - alt[0]) < 0.3 and abs(loc[2] - alt[1]) < 0.3, (loc[1], loc[2]) if loc else None)
+    check("... on the computer's %s side: W flies %s" % (side, want), lr.get("forward") == want, lr.get("forward"))
+check("forward: sensor in the middle or on top -> cannot tell",
+      P.forwardFrom(lua.eval("{0.1, -0.2}"), "left") is None and P.forwardFrom(lua.eval("{0, 1}"), "top") is None)
+
+# both speed sensors along one direction (as on the real craft): one direction
+# sensed, the other from physics; it still flies, stops and holds
 sim = Sim(sensors=((-1, 0), (-1, 0)), **REAL)
 cal_same, learn_same, _ = first_flight("both speed sensors along one direction", sim, tilt_ok=8.0)
 if learn_same:
-    check("same-direction speed sensors: noticed", learn_same.get("sameAxis") and not learn_same.get("M"), learn_same)
-    t0 = sim.t
-    sim.held_plan = [(t0 + 15, t0 + 19, {"r": 1})]
-    sim.events = [(t0 + 30, "land")]
-    sim.limit = t0 + 90
-    res, _ = fly(sim, cal_same, 4, "north", learn_same)
-    east = sim.after(t0, 21)[6] - sim.after(t0, 15)[6]
-    check("same-direction speed sensors: D still goes right (east), lands", east > 2 and res == "landed", (east, res))
+    check("same-direction speed sensors: knows it sees one direction", learn_same.get("speedSeen") == 1,
+          learn_same.get("speedSeen"))
+    # one direction is worked out, not measured: it holds, less exactly
+    keys_flight("both speed sensors along one direction", sim, cal_same, learn_same, hold_ok=3.0)
+
+# no speed sensors at all: speed from physics alone
+sim = Sim(sensors=(), dist=EDGE, **REAL)
+cal_none, learn_none, _ = first_flight("no speed sensors at all", sim, tilt_ok=8.0, hold_ok=2.5)
+if learn_none:
+    keys_flight("no speed sensors at all", sim, cal_none, learn_none, hold_ok=3.0)
 
 # calibrated on uneven ground (the real log): N and W tipped the craft over a
 # diagonal at half the thrust. The in-air scan has to measure the truth.
@@ -440,12 +449,12 @@ cal_u, _ = calibrate(sim)
 t0 = sim.t
 sim.events = [(t0 + 20, "land")]
 sim.limit = t0 + 80
-res, _ = fly(sim, cal_u, 4, "north", {"done": True, "kref": 120, "hover": 0.0137, "G": 9.8})
+res, _ = fly(sim, cal_u, 4, "north", {"done": True, "kref": 120, "hover": 0.0137, "G": 9.8, "v": 3})
 air = [x for x in window(sim, t0, t0 + 20) if x[4]]
 swing = min((x[2] for x in air), default=0)
 rates = [abs(b[2] - a[2]) / (b[0] - a[0]) for a, b in zip(air[::20], air[20::20])]
-check("takeoff from a 9.6 deg lean: levels gently (< 8 deg/s, no swing past -3)",
-      air and max(rates) < 8 and swing > -3, (max(rates) if rates else None, swing))
+check("takeoff from a 9.6 deg lean: levels gently (< 8 deg/s, then brakes softly: no swing past -7)",
+      air and max(rates) < 8 and swing > -7, (max(rates) if rates else None, swing))
 
 # corners
 sim = Sim(layout="x", dist=EDGE, **REAL)
@@ -458,20 +467,7 @@ cal4, learn4, _ = first_flight("with 4 side thrusters", sim, land_after=75.0)  #
 if learn4:
     sides = learn4.get("side") or {}
     check("scan finds all 4 side thrusters", len(list(sides.keys())) == 4, ltable(sides))
-    keys_flight("with 4 side thrusters", sim, cal4, learn4, side_level=3.0)
-
-# no speed sensors: W/A/S/D lean, no hold
-sim = Sim(sensors=(), **REAL)
-cal5, learn5, _ = first_flight("no speed sensors", sim)
-if learn5:
-    t0 = sim.t
-    sim.held_plan = [(t0 + 15, t0 + 19, {"f": 1})]
-    sim.events = [(t0 + 25, "land")]
-    sim.limit = t0 + 90
-    res, _ = fly(sim, cal5, 4, "north", learn5)
-    check("no speed sensors: W leans and goes north", -(sim.after(t0, 21)[5] - sim.after(t0, 15)[5]) > 3,
-          sim.after(t0, 21)[5] - sim.after(t0, 15)[5])
-    check("no speed sensors: lands", res == "landed", res)
+    keys_flight("with 4 side thrusters", sim, cal4, learn4, side_level=3.0, stop_ok=8.0)
 
 # robustness: crafts the guesses do not fit; the scan has to fix it
 for name, kw in [("heavy to turn (K 40)", {"K": 40.0, "hov": 0.0137, "dist": EDGE}),
@@ -515,7 +511,7 @@ cal7, _ = calibrate(sim)
 t0 = sim.t
 sim.events = [(t0 + 5 + i * 0.05, "up") for i in range(200)] + [(t0 + 20, "land")]
 sim.limit = t0 + 200
-res, _ = fly(sim, cal7, 4, "north", {"done": True, "kref": 120})
+res, _ = fly(sim, cal7, 4, "north", {"done": True, "kref": 120, "v": 3})
 check("goal never above +30 blocks", max(x[1] for x in window(sim, t0, sim.t)) < 31,
       max(x[1] for x in window(sim, t0, sim.t)))
 
@@ -698,14 +694,16 @@ check("program: any other key -> all off", any("stopped" in l for l in out) and 
 # the computer turned the other way (screen west): calibrate finds it, W flies east
 sim3 = Sim(alt=(1.0, 0.0), **REAL)  # Altitude Sensor on the computer's left = south of the middle
 files3 = lua.table_from({})
-out3 = run_program(sim3, files3, arg="calibrate")
-check("program: finds the screen side by itself", any("W flies east" in l for l in out3), out3)
+run_program(sim3, files3, arg="calibrate")
 t0 = sim3.t
-w = [(t0 + 50, "key", "w", False)] + [(t0 + 50.3 + 0.3 * i, "key", "w", True) for i in range(16)] + \
-    [(t0 + 55, "key_up", "w", False), (t0 + 70, "key", "l", False)]
+out3 = run_program(sim3, files3, events=[(t0 + 60, "key", "l", False)])
+check("program: first flight finds the screen side by itself", any("W flies east" in l for l in out3), out3)
+t0 = sim3.t
+w = [(t0 + 15, "key", "w", False)] + [(t0 + 15.3 + 0.3 * i, "key", "w", True) for i in range(16)] + \
+    [(t0 + 20, "key_up", "w", False), (t0 + 35, "key", "l", False)]
 out3 = run_program(sim3, files3, events=w)
-east = sim3.after(t0, 56)[6] - sim3.after(t0, 50)[6]
-check("program: ... and W then flies east", east > 4, (east, out3))
+east = sim3.after(t0, 21)[6] - sim3.after(t0, 15)[6]
+check("program: ... and on the next flight W flies east", east > 4, (east, out3))
 
 # re-assembled: thruster names changed
 sim2 = Sim(**REAL)

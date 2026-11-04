@@ -3,8 +3,8 @@
 --   pilot                  take off to +4 blocks; the first flight scans the
 --                          craft in the air (~25 s of small pushes) and saves it
 --   pilot 8                hover at +8
---   pilot forward north    which way W flies (calibrate finds it by itself:
---                          from the screen side; this overrides it)
+--   pilot forward north    which way W flies (the first flight finds it by
+--                          itself: away from the screen; this overrides it)
 --   pilot forward auto     back to finding it by itself
 --   pilot relearn          scan the craft again on the next flight
 -- In flight:  W/S forward/back, A/D left/right, Space/Shift up/down,
@@ -119,7 +119,9 @@ function hw.show(s)
     term.write("LEARNING THE CRAFT: " .. s.scan .. " (hands off)")
     term.setTextColor(colors.white)
   elseif s.learned then
-    term.write("learned - WASD Space/Shift to fly")
+    local seen = ({ [0] = "speed by physics only", [1] = "speed: 1 way sensed + physics",
+      [2] = "speed: sensed both ways" })[s.seen or 0]
+    term.write("WASD Space/Shift to fly | " .. seen)
   end
   if logf then logf.flush() end
 end
@@ -174,9 +176,10 @@ if arg == "forward" then
   cal = cal or {}
   if arg2 == "auto" then
     cal.forwardManual = nil
-    cal.forward = cal.forwardAuto
+    cal.forward = cal.learn and cal.learn.forward
     saveCal(cal)
-    print("W flies away from the screen: " .. tostring(cal.forward) .. ".")
+    print(cal.forward and ("W flies away from the screen: " .. cal.forward .. ".")
+      or "The next flight finds the screen side.")
     return
   end
   if not P.COMPASS[arg2 or ""] then print("pilot forward north|east|south|west|auto"); return end
@@ -193,13 +196,7 @@ elseif arg == "calibrate" then
   local new, why = guarded(function() return P.calibrate(hw) end)
   if not new then print("Failed: " .. tostring(why)); return end
   new.names = names
-  -- which way the screen looks, from where the Altitude Sensor sits
-  new.forwardAuto = P.forwardFrom(new.alt, peripheral.getName(alt))
-  if cal and cal.forwardManual then
-    new.forward, new.forwardManual = cal.forward, true
-  else
-    new.forward = new.forwardAuto or (cal and cal.forward) or "north"
-  end
+  if cal and cal.forwardManual then new.forward, new.forwardManual = cal.forward, true end
   saveCal(new)
   local what = { side = "pushes sideways", none = "does nothing (down?)" }
   for i, t in ipairs(new.t) do
@@ -213,13 +210,8 @@ elseif arg == "calibrate" then
     print(("%-22s %s"):format(names[i], d))
   end
   print(("Hover guess: %.1f%% each."):format(new.hover * 100))
-  if new.forwardAuto then
-    print(("Screen side found: W flies %s (away from the screen)."):format(new.forwardAuto))
-  else
-    print("Could not find the screen side (Altitude Sensor")
-    print("too close to the middle): pilot forward <dir>")
-  end
-  if new.forwardManual then print("Your pilot forward " .. new.forward .. " is kept.") end
+  if new.forwardManual then print("Your pilot forward " .. new.forward .. " is kept.")
+  else print("The first flight finds where the screen is.") end
   print("Now: pilot")
   return
 end
@@ -239,18 +231,25 @@ logf.writeLine("# t y gimbalX gimbalZ thrust... | speeds | thrusters: " .. table
   .. " | speed sensors: " .. table.concat(speeds, " "))
 print(("PILOT +%d  W/S A/D move, Space/Shift up/down"):format(height))
 print("arrows +-1 block, L land, other key = ALL OFF")
-if #speeds < 2 then print("(no 2 speed sensors: cannot stop by itself)") end
-local result, learn = guarded(function() return P.fly(hw, cal, { height = height, forward = cal.forward }) end)
+local opts = { height = height, forward = cal.forward, forwardManual = cal.forwardManual,
+  altSide = peripheral.getName(alt) }
+local result, learn = guarded(function() return P.fly(hw, cal, opts) end)
 term.setCursorPos(1, 8)
 print("Result: " .. tostring(result) .. ". Thrusters off.")
 if learn and learn.done and not (cal.learn and cal.learn.done) then
   cal.learn = learn
+  if learn.forward and not cal.forwardManual then cal.forward = learn.forward end
   saveCal(cal)
+  if learn.forward then print("Screen side found: W flies " .. learn.forward .. ".")
+  elseif not cal.forwardManual then
+    print("Screen side not found (Altitude Sensor too close")
+    print("to the middle?): pilot forward <dir>")
+  end
   print(("Learned: turn %d, g %.1f, hover %.2f%%"):format(math.floor(learn.kref or 0), learn.G or 0,
     (learn.hover or 0) * 100))
 end
-if learn and learn.sameAxis then
-  print("Speed sensors measure the same direction:")
-  print("re-place one (on the deck: no Shift = across")
-  print("your view, Shift = along it), then calibrate.")
+if learn and learn.done and learn.speedSeen and learn.speedSeen < 2 then
+  print(learn.speedSeen == 1 and "Speed sensors see one direction; the other"
+    or "No speed sensor answers; speed")
+  print("is worked out from the lean (holds less exactly).")
 end
