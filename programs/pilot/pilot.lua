@@ -3,7 +3,9 @@
 --   pilot                  take off to +4 blocks; the first flight scans the
 --                          craft in the air (~25 s of small pushes) and saves it
 --   pilot 8                hover at +8
---   pilot forward north    which way W flies (as you stand at the screen)
+--   pilot forward north    which way W flies (calibrate finds it by itself:
+--                          from the screen side; this overrides it)
+--   pilot forward auto     back to finding it by itself
 --   pilot relearn          scan the craft again on the next flight
 -- In flight:  W/S forward/back, A/D left/right, Space/Shift up/down,
 --             Up/Down arrows 1 block, L land,
@@ -169,11 +171,18 @@ local arg, arg2 = ...
 local cal = loadCal()
 
 if arg == "forward" then
-  if not P.COMPASS[arg2 or ""] then print("pilot forward north|east|south|west"); return end
   cal = cal or {}
-  cal.forward = arg2
+  if arg2 == "auto" then
+    cal.forwardManual = nil
+    cal.forward = cal.forwardAuto
+    saveCal(cal)
+    print("W flies away from the screen: " .. tostring(cal.forward) .. ".")
+    return
+  end
+  if not P.COMPASS[arg2 or ""] then print("pilot forward north|east|south|west|auto"); return end
+  cal.forward, cal.forwardManual = arg2, true
   saveCal(cal)
-  print("W now flies " .. arg2 .. ".")
+  print("W now flies " .. arg2 .. ". (pilot forward auto: undo)")
   return
 elseif arg == "relearn" then
   if cal then cal.learn = nil; saveCal(cal) end
@@ -184,7 +193,13 @@ elseif arg == "calibrate" then
   local new, why = guarded(function() return P.calibrate(hw) end)
   if not new then print("Failed: " .. tostring(why)); return end
   new.names = names
-  new.forward = cal and cal.forward
+  -- which way the screen looks, from where the Altitude Sensor sits
+  new.forwardAuto = P.forwardFrom(new.alt, peripheral.getName(alt))
+  if cal and cal.forwardManual then
+    new.forward, new.forwardManual = cal.forward, true
+  else
+    new.forward = new.forwardAuto or (cal and cal.forward) or "north"
+  end
   saveCal(new)
   local what = { side = "pushes sideways", none = "does nothing (down?)" }
   for i, t in ipairs(new.t) do
@@ -197,7 +212,15 @@ elseif arg == "calibrate" then
     end
     print(("%-22s %s"):format(names[i], d))
   end
-  print(("Hover guess: %.1f%% each. Now: pilot"):format(new.hover * 100))
+  print(("Hover guess: %.1f%% each."):format(new.hover * 100))
+  if new.forwardAuto then
+    print(("Screen side found: W flies %s (away from the screen)."):format(new.forwardAuto))
+  else
+    print("Could not find the screen side (Altitude Sensor")
+    print("too close to the middle): pilot forward <dir>")
+  end
+  if new.forwardManual then print("Your pilot forward " .. new.forward .. " is kept.") end
+  print("Now: pilot")
   return
 end
 

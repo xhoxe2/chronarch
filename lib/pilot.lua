@@ -46,7 +46,10 @@ P.RATE_F = 0.8    -- weight of the newest sample in the turn-rate estimate
 -- Height loop (hover units per block, per block/s, per block*s), for g = 9.8;
 -- scaled by the gravity the scan measures.
 P.HP, P.HD, P.HI = 0.07, 0.05, 0.02
-P.VEL_K = 0.8     -- 1/s: how fast speed follows the keys
+P.VEL_K = 0.8     -- 1/s: how fast speed follows the wanted speed
+P.ACCEL = 2.0     -- blocks/s^2: the wanted speed grows and falls no faster (smooth keys)
+P.LEAN = 4        -- degrees of lean per key without a speed picture
+P.LEVEL_RATE = 4  -- degrees/s: from its lean on uneven ground to level after liftoff
 P.POS_K = 0.15    -- 1/s: pulls back to where you stopped
 P.LAG = 0.05      -- sensor values are about a tick old
 
@@ -181,6 +184,7 @@ end
 
 function P.calibrate(hw)
   local t, tips, n = {}, 0, 0
+  local rises = {} -- each tip: lean (deg) and how much the Altitude Sensor rose
   for i = 1, hw.n do
     local s0 = settle(hw)
     local f, got = 0.0007, nil
@@ -198,6 +202,7 @@ function P.calibrate(hw)
       if m > 1 then
         got = { kind = "lift", c1 = d1 / m, c2 = d2 / m, tip = f }
         tips, n = tips + f, n + 1
+        rises[#rises + 1] = { d1, d2, s.y - s0.y }
       elseif s.y - s0.y > 0.3 then -- rose whole; a slow craft may still lean a little
         if m > 0.2 then got = { kind = "lift", c1 = d1 / m, c2 = d2 / m, tip = f / 1.6 }
         else got = { kind = "lift", c1 = 0, c2 = 0, tip = f } end
@@ -222,7 +227,39 @@ function P.calibrate(hw)
     end
   end
   settle(hw)
-  return { hover = tips / math.max(n, 1) / P.TIP_PER_HOVER, t = t }
+  return { hover = tips / math.max(n, 1) / P.TIP_PER_HOVER, t = t, alt = P.locate(rises) }
+end
+
+-- Where the Altitude Sensor sits (blocks south, east of the craft's middle),
+-- from the tips of the ground scan. Tipped by lean (X, Z) about an edge of
+-- the legs, a point rises by  lean * (edge distance - its offset toward the
+-- side that went down):  rise = r * (-X * south - Z * east + |lean| * edge),
+-- r = pi/180. Three unknowns, one equation per tip (need 3+).
+function P.locate(rises)
+  if #rises < 3 then return nil end
+  local r, X, Y = math.pi / 180, {}, {}
+  for _, q in ipairs(rises) do
+    X[#X + 1] = { -q[1] * r, -q[2] * r, math.sqrt(q[1] * q[1] + q[2] * q[2]) * r }
+    Y[#Y + 1] = q[3]
+  end
+  local c = P.lsq(X, Y)
+  if not c then return nil end
+  return { c[1], c[2] }
+end
+
+-- The way W flies, from where the Altitude Sensor sits and on which side of
+-- the computer (its peripheral side). The pilot faces the screen, so forward
+-- is opposite to where the screen looks. nil when it cannot tell (the sensor
+-- is near the middle, or above/below the computer).
+local ORDER = { "north", "east", "south", "west" }
+function P.forwardFrom(alt, side)
+  local turn = ({ front = 2, right = 1, back = 0, left = 3 })[side or ""]
+  if not (alt and turn) then return nil end
+  local south, east = alt[1], alt[2]
+  if math.sqrt(south * south + east * east) < 0.5 then return nil end
+  local i
+  if math.abs(south) > math.abs(east) then i = south > 0 and 3 or 1 else i = east > 0 and 2 or 4 end
+  return ORDER[(i - 1 + turn) % 4 + 1]
 end
 
 -- Flight ---------------------------------------------------------------------
@@ -303,8 +340,9 @@ function P.fly(hw, cal, opts)
   local t = hw.clock()
   local nextShow, dtAvg = 0, 0.1
   local pS, pE, tS, tE = 0, 0, 0, 0 -- position (from the speed sensors) and where to hold
-  local moving = false
-  local spPrev = { 0, 0 }
+  local spPrev = { s.a, s.b }
+  local rest = { s.a, s.b } -- the lean it stands with on uneven ground
+  local wS, wE, holding = 0, 0, false -- wanted speed (slews smoothly), holding still
   local settled, baseSum, baseN = 0, 0, 0
   local queue, T = nil, nil -- scan tests still to run, the running one
   local scanned = learn.kref ~= nil or opts.noscan
@@ -414,7 +452,7 @@ function P.fly(hw, cal, opts)
     return M
   end
   local function moveTest(axis)
-    return { amp = 3, dur = 3.4, analyse = function(d)
+    return { amp = 2, dur = 3.4, analyse = function(d)
       moveData[axis] = d
       if axis == 2 and moveData[1] then
         local M = fitM()
@@ -629,6 +667,15 @@ function P.fly(hw, cal, opts)
     local sp = { inj.sp[1], inj.sp[2] }
     local sideF = {}
     local fwd, right = held.f or 0, held.r or 0
+    -- the keys' speed, reached smoothly (P.ACCEL), back to zero when let go
+    local kS, kE = 0, 0
+    if not landing then
+      kS = P.SPEED * (dirs.f[1] * fwd + dirs.r[1] * right)
+      kE = P.SPEED * (dirs.f[2] * fwd + dirs.r[2] * right)
+    end
+    local dv = P.ACCEL * dt
+    wS = wS + clamp(kS - wS, -dv, dv)
+    wE = wE + clamp(kE - wE, -dv, dv)
     if not T and airborne then
       if Minv and #s.v >= 2 then
         local vS = gk * (Minv[1][1] * s.v[1] + Minv[1][2] * s.v[2])
@@ -640,27 +687,29 @@ function P.fly(hw, cal, opts)
           vS, vE = 0, 0
         end
         pS, pE = pS + vS * dt, pE + vE * dt
-        local wS, wE
-        if (fwd ~= 0 or right ~= 0) and not landing then
-          wS = P.SPEED * (dirs.f[1] * fwd + dirs.r[1] * right)
-          wE = P.SPEED * (dirs.f[2] * fwd + dirs.r[2] * right)
-          moving = true
-        else
-          if moving then tS, tE = pS + vS / P.VEL_K, pE + vE / P.VEL_K; moving = false end
-          wS = clamp(P.POS_K * (tS - pS), -P.SPEED, P.SPEED)
-          wE = clamp(P.POS_K * (tE - pE), -P.SPEED, P.SPEED)
+        -- moving: follow the wanted speed; stopped: stay where it came to rest
+        local still = kS == 0 and kE == 0 and math.abs(wS) + math.abs(wE) < 0.05
+        if still and not holding then tS, tE, holding = pS, pE, true end
+        if not still then holding = false end
+        local uS, uE = wS, wE
+        if holding then
+          uS = clamp(P.POS_K * (tS - pS), -P.SPEED, P.SPEED)
+          uE = clamp(P.POS_K * (tE - pE), -P.SPEED, P.SPEED)
         end
         local lim = gk * P.MAX_TILT
-        local aS = clamp(P.VEL_K * (wS - vS), -lim, lim)
-        local aE = clamp(P.VEL_K * (wE - vE), -lim, lim)
+        local aS = clamp(P.VEL_K * (uS - vS), -lim, lim)
+        local aE = clamp(P.VEL_K * (uE - vE), -lim, lim)
         sideF, aS, aE = sideShare(aS, aE)
         sp[1], sp[2] = aS / gk, aE / gk
       else
-        -- no speed sensors: lean while a key is held, level when let go
-        sp[1] = P.MAX_TILT / 2 * (dirs.f[1] * fwd + dirs.r[1] * right)
-        sp[2] = P.MAX_TILT / 2 * (dirs.f[2] * fwd + dirs.r[2] * right)
+        -- no speed picture: lean while a key is held, level when let go
+        sp[1] = P.LEAN * wS / P.SPEED
+        sp[2] = P.LEAN * wE / P.SPEED
       end
-      tS, tE = moving and pS or tS, moving and pE or tE
+    end
+    for k = 1, 2 do
+      if airborne then rest[k] = rest[k] - clamp(rest[k], -P.LEVEL_RATE * dt, P.LEVEL_RATE * dt) end
+      sp[k] = sp[k] + rest[k]
     end
 
     for k = 1, 2 do
