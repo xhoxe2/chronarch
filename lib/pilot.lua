@@ -32,6 +32,7 @@ P.DT = 0.05       -- extra sleep per control step (reading/writing takes ticks t
 P.MAX_HEIGHT = 30
 P.CLIMB = 0.6     -- blocks/s, target height speed (and Space/Shift)
 P.DESCEND = 0.35
+P.SETTLE = 1.5    -- seconds: after touchdown the thrust fades out over this
 P.SPEED = 4       -- blocks/s with W/A/S/D
 P.MAX_TILT = 10   -- degrees the craft may lean to move (and brake)
 P.TILT_RATE = 15  -- degrees/s: the wanted lean changes no faster (no jolts)
@@ -51,7 +52,7 @@ P.VEL_K = 0.8     -- 1/s: how fast speed follows the wanted speed
 P.ACCEL = 1.5     -- blocks/s^2: the wanted speed grows and falls no faster (smooth keys)
 P.LEAK = 0.05     -- 1/s: speed no sensor sees fades (air drag, and drift of the sum)
 P.SENSOR_K = 20   -- 1/s: how hard a speed sensor pulls the worked-out speed (20: takes it as is)
-P.LEVEL_RATE = 4  -- degrees/s: from its lean on uneven ground to level after liftoff
+P.LEVEL_RATE = 12 -- degrees/s: from its lean on uneven ground to level, once it lifts
 P.POS_K = 0.15    -- 1/s: pulls back to where you stopped
 P.LAG = 0.05      -- sensor values are about a tick old
 
@@ -462,7 +463,8 @@ function P.fly(hw, cal, opts)
   local Ia, Ib = 0, 0
   local vy, wa, wb = 0, 0, 0
   local a, b, y = s.a, s.b, s.y
-  local landing, still = false, 0
+  local landing = false
+  local contact, settle, baseSettle = 0, nil, nil -- touchdown: how long it has sat, then the hand-over to the legs
   local t = hw.clock()
   local nextShow, dtAvg = 0, 0.1
   local pS, pE, tS, tE = 0, 0, 0, 0 -- position (from the speed sensors) and where to hold
@@ -725,7 +727,8 @@ function P.fly(hw, cal, opts)
     wa = (1 - P.RATE_F) * wa + P.RATE_F * (s.a - a) / dt
     wb = (1 - P.RATE_F) * wb + P.RATE_F * (s.b - b) / dt
     a, b, y = s.a, s.b, s.y
-    local airborne = y > ground + 0.2
+    local airborne = y > ground + 0.2 and not settle
+    local off = y > ground + 0.03 and not settle -- left the ground: from here it can drift
 
     -- height: the target moves to the goal at a calm speed (Space/Shift move the goal)
     if (held.u or 0) ~= 0 and not landing and not T then
@@ -745,8 +748,17 @@ function P.fly(hw, cal, opts)
     end
     if opts.learnOnly and learn.done and not landing then landing = true end -- learning hop: done, land
     if landing then
-      if target < y - 0.3 and math.abs(vy) < 0.08 then still = still + dt else still = 0 end
-      if still > 1 then P.cut(hw); return "landed", learn end
+      if not settle then
+        -- touchdown: told to go well below, yet it stands still - a leg is on
+        -- the ground (a craft just lagging behind the target still moves down)
+        if target < y - 0.5 and math.abs(vy) < 0.06 then contact = contact + dt else contact = 0 end
+        if contact > 0.6 then settle = 0 end
+      else
+        -- hand the weight over to the legs: no levelling against the ground,
+        -- the thrust fades out, then all off
+        settle = settle + dt
+        if settle >= P.SETTLE then P.cut(hw); return "landed", learn end
+      end
     end
 
     -- the scan starts once the craft hangs steady at its first goal
@@ -819,6 +831,10 @@ function P.fly(hw, cal, opts)
     if frozen then base = h * (1 + I) + inj.base
     else base = h * (1 + hp() * e - hd() * (vy - vt) + I) end
     base = clamp(base, 0, 3 * h)
+    if settle then
+      baseSettle = baseSettle or base
+      base = baseSettle * math.max(0, 1 - settle / P.SETTLE)
+    end
 
     -- horizontal: speed from the sensors, keys -> wanted speed -> lean
     local sp = { inj.sp[1], inj.sp[2] }
@@ -830,11 +846,11 @@ function P.fly(hw, cal, opts)
       kS = P.SPEED * (dirs.f[1] * fwd + dirs.r[1] * right)
       kE = P.SPEED * (dirs.f[2] * fwd + dirs.r[2] * right)
     end
-    local dv = P.ACCEL * dt * (recovering and 0.5 or 1)
+    local dv = P.ACCEL * dt
     wS = wS + clamp(kS - wS, -dv, dv)
     wE = wE + clamp(kE - wE, -dv, dv)
     if recovering and math.abs(wS) + math.abs(wE) < 0.05 then recovering = false end
-    if airborne then
+    if off then
       local r = math.pi / 180
       vS = vS + (G * math.sin(a * r) - P.LEAK * vS) * dt
       vE = vE + (G * math.sin(b * r) - P.LEAK * vE) * dt
@@ -860,7 +876,7 @@ function P.fly(hw, cal, opts)
     local levelled = math.abs(rest[1]) < 0.5 and math.abs(rest[2]) < 0.5
     local active = not T and airborne and levelled and (learn.done or opts.noscan)
     if active and not wasActive then
-      -- taking over a craft that is already moving: slow it down gently
+      -- taking over a craft that is already moving: slow it down smoothly
       wS, wE, holding, recovering = vS, vE, false, true
     end
     wasActive = active
@@ -882,8 +898,11 @@ function P.fly(hw, cal, opts)
         sp[1], sp[2] = aS / gk, aE / gk
       end
     end
+    -- out of the lean it stood with on uneven ground: the legs hold it until
+    -- it lifts (they need 2.5x a side's hover thrust to tip), then level it
+    -- briskly - every second spent leaned pushes it sideways by G*sin(lean)
     for k = 1, 2 do
-      if airborne then rest[k] = rest[k] - clamp(rest[k], -P.LEVEL_RATE * dt, P.LEVEL_RATE * dt) end
+      if off then rest[k] = rest[k] - clamp(rest[k], -P.LEVEL_RATE * dt, P.LEVEL_RATE * dt) end
       sp[k] = sp[k] + rest[k]
     end
 
@@ -908,6 +927,7 @@ function P.fly(hw, cal, opts)
       end
     end
     Ia, Ib = Iax[1], Iax[2]
+    if settle then tau = { 0, 0 } end -- the ground holds it now: do not fight it
 
     local function makeFs(bs, t1, t2, plain)
       local fs = {}

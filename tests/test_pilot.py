@@ -317,6 +317,14 @@ def first_flight(name, sim, height=4, land_after=65.0, tilt_ok=8.0, calm_ok=2.0,
         check(name + ": stays in place (< %g block in 12 s)" % hold_ok, drift < hold_ok, drift)
     check(name + ": lands softly and switches off", res == "landed" and sim.on_ground() and sim.impact < 1.5
           and all(v == 0 for v in sim.writes[-1]), (res, sim.impact, sim.writes[-1]))
+    # touchdown: the legs take the weight - lifters even (no levelling against
+    # the ground) and fading out step by step before all goes off
+    nl = len(sim.lifters)
+    fade = [w[:nl] for w in sim.writes[-11:-1]]
+    even = all(max(w) - min(w) < 1e-9 for w in fade)
+    falling = all(b[0] <= a[0] + 1e-12 for a, b in zip(fade, fade[1:])) and fade[0][0] > 2 * fade[-1][0]
+    check(name + ": touchdown hands over to the legs (even thrust, fading out)", res == "landed" and even and falling,
+          [round(w[0], 5) for w in fade])
     return cal, learn, t0
 
 
@@ -458,8 +466,8 @@ res, _ = fly(sim, cal_u, 4, "north", {"done": True, "kref": 120, "hover": 0.0137
 air = [x for x in window(sim, t0, t0 + 20) if x[4]]
 swing = min((x[2] for x in air), default=0)
 rates = [abs(b[2] - a[2]) / (b[0] - a[0]) for a, b in zip(air[::20], air[20::20])]
-check("takeoff from a 9.6 deg lean: levels gently (< 8 deg/s, then brakes softly: no swing past -7)",
-      air and max(rates) < 8 and swing > -7, (max(rates) if rates else None, swing))
+check("takeoff from a 9.6 deg lean: levels within a second or so (< 16 deg/s), no swing past -7",
+      air and max(rates) < 16 and swing > -7, (max(rates) if rates else None, swing))
 
 # corners
 sim = Sim(layout="x", dist=EDGE, **REAL)
@@ -519,6 +527,28 @@ sim.limit = t0 + 200
 res, _ = fly(sim, cal7, 4, "north", {"done": True, "kref": 120, "v": 3})
 check("goal never above +30 blocks", max(x[1] for x in window(sim, t0, sim.t)) < 31,
       max(x[1] for x in window(sim, t0, sim.t)))
+
+# landed 17 deg leaned (a slope, or the craft came down tilted): the next
+# takeoff must level out on the way up, not shoot off sideways
+sim = Sim(**REAL)
+cal_s, _ = calibrate(sim)
+t0 = sim.t
+sim.events = [(t0 + 65, "land")]
+sim.limit = t0 + 130
+_, learn_s = fly(sim, cal_s)  # a learned craft (with its speed sensors)...
+# leaning lifts push it sideways (G*sin(lean)) until it is level: the
+# steeper the slope, the further; it must not swing past the slope either
+# (17 deg: how far it goes depends on which leg lets go first - only no swing)
+for slope, near in ((9.6, 3.0), (17.0, 99.0)):  # 9.6: the real takeoff spot
+    sim.rest, sim.th = [-slope, 0.0], [-slope, 0.0]  # ...now standing on a slope
+    t0 = sim.t
+    sim.events = [(t0 + 25, "land")]
+    sim.limit = t0 + 80
+    res, _ = fly(sim, cal_s, 4, "north", learn_s)
+    drift = math.hypot(sim.after(t0, 20)[5] - sim.after(t0, 0)[5], sim.after(t0, 20)[6] - sim.after(t0, 0)[6])
+    air = [x for x in sim.trace if x[0] >= t0 and x[4]]
+    check("takeoff from a %g deg slope: stays near (< %g blocks), no swing past the slope" % (slope, near),
+          drift < near and tilt_max(air) <= slope + 0.5 and res == "landed", (drift, tilt_max(air), res))
 
 # kill in flight
 sim = Sim(**REAL)
